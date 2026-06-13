@@ -214,11 +214,25 @@ class Orchestrator:
         executor = DAGExecutor(bb, budget, acc)
         out = executor.run(specs)
 
-        # Synthesize the final answer from all agents' outputs.
+        # Produce the user-facing answer.
         if out.outputs:
-            bb.emit("synth_start")
-            answer = synthesize(intent, "swarm", out.outputs)
-            bb.emit("answer", payload={"text": answer, "source": "synth"})
+            if len(out.outputs) == 1 and tri.kind == "simple_task":
+                # Single agent — use its answer verbatim. No need to round-trip
+                # through the synthesizer for a one-shot reply.
+                only = next(iter(out.outputs.values()))
+                ans = only.get("answer") if isinstance(only, dict) else None
+                if not ans:
+                    ans = str(only)[:2000]
+                bb.emit("answer", payload={"text": ans, "source": "agent"})
+            else:
+                bb.emit("synth_start")
+                answer = synthesize(intent, "swarm", out.outputs)
+                bb.emit("answer", payload={"text": answer, "source": "synth"})
+        elif tri.kind != "chat":
+            bb.emit("answer", payload={
+                "text": "(the agent(s) produced no output — try a more specific prompt with a path to search)",
+                "source": "fallback",
+            })
 
         bb.emit("finished", payload={
             "spawned": out.spawned,

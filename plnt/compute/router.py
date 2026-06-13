@@ -194,7 +194,11 @@ class LLMRouter:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        if "FINAL:" in stripped:
+        # Strip a leading FINAL marker in any of its common forms.
+        for marker in ("FINAL:", "FINAL\n", "FINAL "):
+            if stripped.startswith(marker):
+                return Decision(kind="final", text=stripped[len(marker):].strip())
+        if "FINAL:" in stripped[:40]:
             tail = stripped.split("FINAL:", 1)[1].strip()
             return Decision(kind="final", text=tail)
         return Decision(kind="final", text=stripped)

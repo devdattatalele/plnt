@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -69,15 +70,14 @@ type Model struct {
 	width   int
 	height  int
 	input   textinput.Model
-	log     viewport.Model
-	logBuf  string
+	chatVP  viewport.Model
+	turns   []Turn
 	spinner spinner.Model
-	swarm   *SwarmState
+	swarm   *SwarmState // only for in-flight working strip
 	health  client.Health
 	connOK  bool
 	connErr error
 	stage   stage
-	intent  string
 }
 
 var globalProgram *tea.Program
@@ -88,12 +88,12 @@ func New(baseURL string) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	ti := textinput.New()
 	ti.Prompt = "› "
-	ti.Placeholder = "type an intent and hit ⏎"
+	ti.Placeholder = "type a message and hit ⏎"
 	ti.Focus()
-	ti.CharLimit = 2000
+	ti.CharLimit = 4000
 	ti.Width = 80
 
-	vp := viewport.New(80, 8)
+	vp := viewport.New(80, 12)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -104,7 +104,7 @@ func New(baseURL string) Model {
 		ctx:     ctx,
 		cancel:  cancel,
 		input:   ti,
-		log:     vp,
+		chatVP:  vp,
 		spinner: sp,
 		stage:   stageIdle,
 	}
@@ -165,57 +165,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout()
+		m.refreshChat()
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
 			m.cancel()
 			return m, tea.Quit
+		case "ctrl+l":
+			m.turns = nil
+			m.refreshChat()
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			canSubmit := m.stage == stageIdle || m.stage == stageDone
 			if text != "" && canSubmit {
 				m.input.SetValue("")
-				m.intent = text
 				m.stage = stageSubmitting
 				m.swarm = nil
-				m.appendLog(Accent.Render("you  ") + text)
+				// Optimistically add the turn; we'll fill RunID on runStartedMsg.
+				m.turns = append(m.turns, Turn{Prompt: text, StartedAt: time.Now()})
+				m.refreshChat()
 				cmds = append(cmds, m.submit(text))
 			}
 		case "esc":
 			m.input.SetValue("")
+		case "up":
+			m.chatVP.LineUp(1)
+		case "down":
+			m.chatVP.LineDown(1)
+		case "pgup":
+			m.chatVP.HalfViewUp()
+		case "pgdown":
+			m.chatVP.HalfViewDown()
 		}
 
 	case spinner.TickMsg:
 		var c tea.Cmd
 		m.spinner, c = m.spinner.Update(msg)
 		cmds = append(cmds, c)
+		// Re-render chat so in-flight turns animate their "working…"
+		m.refreshChat()
 
 	case connectedMsg:
 		m.connOK = true
 		m.health = msg.h
-		m.appendLog(OK.Render("✓ connected ") + Subtle.Render(fmt.Sprintf("v%s home=%s", msg.h.Version, msg.h.Home)))
 
 	case connectErrMsg:
 		m.connErr = msg.err
-		m.appendLog(Err.Render("✗ surface unreachable: ") + msg.err.Error())
 
 	case runStartedMsg:
 		m.swarm = NewSwarm(msg.id, msg.intent)
 		m.stage = stageTriage
-		m.appendLog(Accent.Render("⤳    ") + "run started " + Subtle.Render(msg.id))
+		// Attach run_id to the last turn (the optimistic one we added on submit)
+		if n := len(m.turns); n > 0 {
+			m.turns[n-1].RunID = msg.id
+		}
+		m.refreshChat()
 		cmds = append(cmds, m.startStream(msg.id))
 
 	case submitErrMsg:
 		m.stage = stageIdle
-		m.appendLog(Err.Render("✗ submit failed: ") + msg.err.Error())
+		if n := len(m.turns); n > 0 {
+			m.turns[n-1].Answer = "submit failed: " + msg.err.Error()
+			m.turns[n-1].Source = "fallback"
+			m.turns[n-1].FinishedAt = time.Now()
+		}
+		m.refreshChat()
 
 	case eventMsg:
 		evt := client.Event(msg)
 		if m.swarm != nil {
 			m.swarm.Apply(evt)
 		}
-		m.appendEvent(evt)
+		m.applyEventToTurn(evt)
 		switch evt.Kind {
 		case "triage":
 			if m.swarm != nil && m.swarm.TriageKind == "chat" {
@@ -230,14 +252,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "finished":
 			if evt.AgentID == "" {
 				m.stage = stageDone
+				if n := len(m.turns); n > 0 {
+					m.turns[n-1].FinishedAt = time.Now()
+				}
 			}
 		}
+		m.refreshChat()
 
 	case streamEndedMsg:
 		if m.stage != stageDone {
 			m.stage = stageDone
 		}
-		m.appendLog(Subtle.Render("(stream ended)"))
+		if n := len(m.turns); n > 0 && m.turns[n-1].FinishedAt.IsZero() {
+			m.turns[n-1].FinishedAt = time.Now()
+		}
+		m.refreshChat()
 	}
 
 	var cmd tea.Cmd
@@ -247,6 +276,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// applyEventToTurn populates the current (last) Turn from the event stream.
+func (m *Model) applyEventToTurn(evt client.Event) {
+	n := len(m.turns)
+	if n == 0 {
+		return
+	}
+	t := &m.turns[n-1]
+	switch evt.Kind {
+	case "triage":
+		if k, ok := evt.Payload["kind"].(string); ok {
+			t.TriageKind = k
+		}
+	case "plan":
+		if c, ok := evt.Payload["agent_count"].(float64); ok {
+			t.AgentCount = int(c)
+		}
+	case "answer":
+		if text, ok := evt.Payload["text"].(string); ok {
+			t.Answer = text
+		}
+		if src, ok := evt.Payload["source"].(string); ok {
+			t.Source = src
+		}
+	}
+}
+
 // ---------------------------------------------------------------- view
 
 func (m Model) View() string {
@@ -254,18 +309,15 @@ func (m Model) View() string {
 		return "plnt: resize terminal to at least 60×16"
 	}
 	header := m.renderHeader()
-	statusBar := m.renderStatus()
-	swarm := m.renderSwarmPanel()
-	answer := m.renderAnswerPanel()
-	log := m.renderLogPanel()
+	chat := m.renderChatPanel()
+	live := m.renderLivePanel()
 	prompt := m.renderPrompt()
 
-	sections := []string{header, statusBar, swarm}
-	if answer != "" {
-		sections = append(sections, answer)
+	sections := []string{header, chat}
+	if live != "" {
+		sections = append(sections, live)
 	}
-	sections = append(sections, log, prompt)
-
+	sections = append(sections, prompt)
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
@@ -281,7 +333,7 @@ func (m Model) renderHeader() string {
 		color.Render("● "+state),
 		Subtle.Render(m.cli.BaseURL),
 	)
-	right := Subtle.Render("⏎ submit · ⎋ clear · ^C quit")
+	right := Subtle.Render("⏎ send · ⎋ clear · ^L wipe · ^C quit")
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
 		gap = 1
@@ -289,47 +341,50 @@ func (m Model) renderHeader() string {
 	return lipgloss.NewStyle().Padding(0, 1).Render(left + strings.Repeat(" ", gap) + right)
 }
 
-func (m Model) renderStatus() string {
-	line := fmt.Sprintf("%s %s", m.spinner.View(), Accent.Render(m.stage.String()))
-	if m.swarm != nil && m.swarm.TriageKind != "" {
-		tag := Subtle.Render(fmt.Sprintf("triage=%s", m.swarm.TriageKind))
-		line += "  " + tag
-		if m.swarm.TriageReason != "" {
-			line += "  " + Subtle.Render(m.swarm.TriageReason)
-		}
-	}
-	if m.stage == stageDone {
-		line = OK.Render("✓ ") + Accent.Render("done")
-	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(line)
+func (m Model) renderChatPanel() string {
+	w := m.width - 2
+	style := PanelStyle(w, false)
+	body := HeaderLabel("conversation") + "\n" + m.chatVP.View()
+	return style.Render(body)
 }
 
-func (m Model) renderSwarmPanel() string {
+// renderLivePanel shows the currently-working swarm: stage, triage, agents.
+// Hidden when idle.
+func (m Model) renderLivePanel() string {
+	if m.stage == stageIdle {
+		return ""
+	}
 	w := m.width - 2
-	focused := m.stage == stageRunning || m.stage == stageSynth
-	style := PanelStyle(w, focused)
+	style := PanelStyle(w, true)
 
-	rows := []string{HeaderLabel("swarm")}
-	if m.swarm == nil {
-		rows = append(rows, Subtle.Render("  no run yet — type an intent below."))
-		return style.Render(strings.Join(rows, "\n"))
+	stageText := m.stage.String()
+	statusLine := fmt.Sprintf("%s %s", m.spinner.View(), Accent.Render(stageText))
+	if m.stage == stageDone {
+		statusLine = OK.Render("✓ ") + Accent.Render("done")
 	}
 
-	rows = append(rows,
-		Subtle.Render("intent: ")+m.swarm.Intent,
-		Subtle.Render(fmt.Sprintf("run %s · %s", m.swarm.RunID, m.swarm.PlanText)),
-	)
+	rows := []string{HeaderLabel("working"), statusLine}
 
-	if m.swarm.TriageKind == "chat" {
-		rows = append(rows, Chat.Render("  (chat — no agents spawned, planner replied directly)"))
-	} else {
-		agents := m.swarm.Sorted()
-		if len(agents) == 0 {
-			rows = append(rows, Subtle.Render("  (waiting for the planner to emit agents…)"))
+	if m.swarm != nil {
+		// Triage line
+		if m.swarm.TriageKind != "" {
+			line := Subtle.Render("triage: ") + m.swarm.TriageKind
+			if m.swarm.TriageKind == "chat" {
+				line += Chat.Render("  (no agents — direct reply)")
+			}
+			rows = append(rows, line)
 		}
+		// Agent rows
+		agents := m.swarm.Sorted()
 		for _, a := range agents {
 			rows = append(rows, m.renderAgentRow(a))
 		}
+	}
+
+	// Limit the live panel to ~8 rows visually.
+	const maxRows = 8
+	if len(rows) > maxRows {
+		rows = append(rows[:maxRows], Subtle.Render(fmt.Sprintf("  … +%d more", len(rows)-maxRows)))
 	}
 
 	return style.Render(strings.Join(rows, "\n"))
@@ -363,159 +418,35 @@ func (m Model) renderAgentRow(a *AgentView) string {
 		st, idShort(a.ID), Accent.Render(padRight(a.Role, 22)), deps, a.ToolCalls, a.Elapsed(), tail)
 }
 
-func (m Model) renderAnswerPanel() string {
-	if m.swarm == nil || m.swarm.Answer == "" {
-		return ""
-	}
-	style := PanelStyle(m.width-2, m.stage == stageDone)
-	source := m.swarm.AnswerSource
-	if source == "" {
-		source = "answer"
-	}
-	rows := []string{
-		HeaderLabel("answer · " + source),
-		wrap(m.swarm.Answer, m.width-6),
-	}
-	return style.BorderForeground(colAnswer).Render(strings.Join(rows, "\n"))
-}
-
-func (m Model) renderLogPanel() string {
-	style := PanelStyle(m.width-2, false)
-	body := HeaderLabel("event log") + "\n" + m.log.View()
-	return style.Render(body)
-}
-
 func (m Model) renderPrompt() string {
 	style := PanelStyle(m.width-2, m.stage == stageIdle || m.stage == stageDone)
 	return style.Render(m.input.View())
 }
+
+// ---------------------------------------------------------------- layout
 
 func (m *Model) layout() {
 	if m.width < 40 || m.height < 10 {
 		return
 	}
 	m.input.Width = m.width - 8
-	// Roughly: header(1) + status(1) + swarm(8-12) + answer(0 or 5) + log(?) + prompt(3)
-	logHeight := m.height - 22
-	if logHeight < 4 {
-		logHeight = 4
+	// Live panel takes a fixed slot when visible. Chat gets the rest.
+	chatHeight := m.height - 8 // header + prompt + live + breathing room
+	if m.stage == stageIdle {
+		chatHeight = m.height - 6
 	}
-	m.log.Width = m.width - 6
-	m.log.Height = logHeight
+	if chatHeight < 6 {
+		chatHeight = 6
+	}
+	m.chatVP.Width = m.width - 6
+	m.chatVP.Height = chatHeight
 }
 
-func (m *Model) appendLog(line string) {
-	if m.logBuf != "" {
-		m.logBuf += "\n"
-	}
-	m.logBuf += line
-	if len(m.logBuf) > 200_000 {
-		if i := strings.IndexByte(m.logBuf[50_000:], '\n'); i >= 0 {
-			m.logBuf = m.logBuf[50_000+i+1:]
-		}
-	}
-	m.log.SetContent(m.logBuf)
-	m.log.GotoBottom()
-}
-
-func (m *Model) appendEvent(e client.Event) {
-	pre := ""
-	switch e.Kind {
-	case "intent":
-		pre = Accent.Render("intent")
-	case "triage_start":
-		pre = Subtle.Render("triage")
-	case "triage":
-		pre = Accent.Render("triage")
-	case "planner_start":
-		pre = Subtle.Render("plan→ ")
-	case "plan":
-		pre = Accent.Render("plan  ")
-	case "spawn":
-		pre = Accent.Render("spawn ")
-	case "started":
-		pre = OK.Render("start ")
-	case "tool_call":
-		pre = Subtle.Render("tool→ ")
-	case "tool_result":
-		pre = Subtle.Render("←tool ")
-	case "model_call":
-		pre = Subtle.Render("model→")
-	case "model_result":
-		pre = Subtle.Render("←model")
-	case "result":
-		pre = OK.Render("✓ res ")
-	case "answer":
-		pre = Answer.Render("→ans  ")
-	case "synth_start":
-		pre = Accent.Render("synth ")
-	case "error":
-		pre = Err.Render("✗ err ")
-	case "killed":
-		pre = Err.Render("☠ kill")
-	case "finished":
-		pre = OK.Render("end   ")
-	default:
-		pre = Subtle.Render(fmt.Sprintf("%-6s", e.Kind))
-	}
-	short := compactPayload(e)
-	id := e.AgentID
-	if id == "" {
-		id = "—"
-	}
-	m.appendLog(fmt.Sprintf("%s %s %s", pre, Subtle.Render(idShort(id)), short))
-}
-
-func compactPayload(e client.Event) string {
-	if e.Payload == nil {
-		return ""
-	}
-	switch e.Kind {
-	case "tool_call":
-		t, _ := e.Payload["tool"].(string)
-		args, _ := e.Payload["args"].(map[string]interface{})
-		return fmt.Sprintf("%s(%s)", t, compactArgs(args))
-	case "tool_result":
-		t, _ := e.Payload["tool"].(string)
-		ok, _ := e.Payload["ok"].(bool)
-		if ok {
-			return fmt.Sprintf("%s ok", t)
-		}
-		return fmt.Sprintf("%s FAILED", t)
-	case "spawn":
-		role, _ := e.Payload["role"].(string)
-		return fmt.Sprintf("role=%s", role)
-	case "plan":
-		c, _ := e.Payload["agent_count"].(float64)
-		return fmt.Sprintf("agents=%d", int(c))
-	case "triage":
-		kind, _ := e.Payload["kind"].(string)
-		return kind
-	case "answer":
-		src, _ := e.Payload["source"].(string)
-		return fmt.Sprintf("from %s", src)
-	case "killed", "error":
-		r, _ := e.Payload["reason"].(string)
-		if len(r) > 70 {
-			r = r[:67] + "…"
-		}
-		return r
-	case "finished":
-		rc, ok := e.Payload["exit_code"].(float64)
-		if ok {
-			w, _ := e.Payload["wall_seconds"].(float64)
-			return fmt.Sprintf("exit=%d wall=%.1fs", int(rc), w)
-		}
-		s, _ := e.Payload["spawned"].(float64)
-		return fmt.Sprintf("spawned=%d", int(s))
-	case "intent":
-		t, _ := e.Payload["text"].(string)
-		if len(t) > 70 {
-			t = t[:67] + "…"
-		}
-		return t
-	}
-	return ""
+func (m *Model) refreshChat() {
+	m.layout()
+	body := RenderTurns(m.turns, m.width-2)
+	m.chatVP.SetContent(body)
+	m.chatVP.GotoBottom()
 }
 
 func idShort(s string) string {
