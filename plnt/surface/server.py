@@ -51,6 +51,14 @@ def health() -> dict:
     return {"ok": True, "version": __version__, "home": str(_paths.home)}
 
 
+@app.get("/v1/system")
+def system_snapshot() -> dict:
+    """Live host snapshot: sandbox rungs, docker stats, recent runs."""
+    from plnt.surface.monitor import snapshot
+
+    return snapshot()
+
+
 @app.get("/v1/skills")
 def list_skills() -> dict:
     return {"skills": _orchestrator.skills.list()}

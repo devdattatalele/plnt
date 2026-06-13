@@ -6,8 +6,14 @@ from plnt.control.orchestrator import Orchestrator
 from plnt.control.skills import SkillRegistry
 
 
-def test_e2e_intent_to_result(isolated_home, tmp_path):
-    # Seed the skills dir with a general-helper.
+def test_e2e_intent_to_result(isolated_home, tmp_path, monkeypatch):
+    # Force the offline router so this test is hermetic — no external Ollama
+    # / cloud API needed.
+    monkeypatch.setenv("PLNT_REQUIRED_PATH", str(tmp_path / "never-exists"))
+    monkeypatch.delenv("PLNT_CLOUD_URL", raising=False)
+    monkeypatch.delenv("PLNT_CLOUD_API_KEY", raising=False)
+    monkeypatch.setenv("PLNT_LOCAL_URL", "http://127.0.0.1:1")
+
     from plnt.config import paths
 
     sk_dir = paths().skills

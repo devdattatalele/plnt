@@ -197,9 +197,13 @@ class ProcessSandbox:
             "PLNT_BLACKBOARD_DIR": str(self.bb.dir),
             "PLNT_HOME": os.environ.get("PLNT_HOME", ""),
             "PLNT_SEARCH_ROOTS": roots_str,
-            # Compute endpoint is inherited from the parent.
-            "PLNT_COMPUTE_URL": os.environ.get("PLNT_COMPUTE_URL", ""),
         }
+        # Pass through every PLNT_* env var so the child's backend_picker sees
+        # the same configuration as the parent (local/cloud URLs, API keys,
+        # required SSD path, model names, force overrides).
+        for k, v in os.environ.items():
+            if k.startswith("PLNT_") and k not in env:
+                env[k] = v
         # Carry through anything the operator explicitly allow-lists.
         passthrough = os.environ.get("PLNT_ENV_PASSTHROUGH", "").split(",")
         for k in (k.strip() for k in passthrough if k.strip()):

@@ -128,6 +128,55 @@ def tail(run_id: str, follow: bool) -> None:
         pass
 
 
+# ----------------------------------------------------------------------- monitor
+
+
+@cli.command()
+@click.option("--remote/--local", default=False, help="Read /v1/system over HTTP, or compute locally.")
+def monitor(remote: bool) -> None:
+    """Snapshot live agents + sandbox rungs + recent runs."""
+    if remote:
+        try:
+            r = httpx.get(f"{_base_url()}/v1/system", timeout=4)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            console.print(f"[red]surface unreachable:[/red] {e}")
+            sys.exit(1)
+    else:
+        from plnt.surface.monitor import snapshot
+
+        data = snapshot()
+
+    console.print(f"[bold]sandbox rungs:[/bold] {', '.join(data.get('sandbox_rungs', []))}")
+    console.print(f"[bold]cpu count:[/bold] {data.get('cpu_count')}")
+    docker_agents = data.get("docker_agents", [])
+    console.print(f"[bold]docker agents:[/bold] {len(docker_agents)} live")
+    if docker_agents:
+        table = Table(title="live agents")
+        for col in ("id", "name", "image", "status"):
+            table.add_column(col)
+        for a in docker_agents:
+            table.add_row(a["id"][:12], a["name"], a["image"], a["status"])
+        console.print(table)
+        stats = data.get("docker_stats", [])
+        if stats:
+            t2 = Table(title="resources")
+            for col in ("id", "cpu", "mem", "mem_pct"):
+                t2.add_column(col)
+            for s in stats:
+                t2.add_row(s["id"][:12], s["cpu"], s["mem"], s["mem_pct"])
+            console.print(t2)
+    runs = data.get("runs_recent", [])[:5]
+    if runs:
+        t3 = Table(title="recent runs")
+        for col in ("run_id", "event_bytes"):
+            t3.add_column(col)
+        for r in runs:
+            t3.add_row(r["run_id"], str(r["event_bytes"]))
+        console.print(t3)
+
+
 # ----------------------------------------------------------------------- skills
 
 

@@ -4,15 +4,15 @@ from plnt.compute.router import Decision, LLMRouter
 
 
 def test_offline_fallback_does_search_first():
-    r = LLMRouter(small_url="http://127.0.0.1:1", deep_url="http://127.0.0.1:1")
+    r = LLMRouter(force="offline")
     d = r.step(system="sys", user="please find agent memory papers", tools=["search", "execute"])
     assert isinstance(d, Decision)
-    # offline → first turn is a search
     assert d.kind == "tool_call" and d.tool_name == "search"
+    assert d.backend == "offline"
 
 
 def test_offline_summarises_after_transcript():
-    r = LLMRouter(small_url="http://127.0.0.1:1")
+    r = LLMRouter(force="offline")
     d = r.step(
         system="sys",
         user="catch me up",
@@ -21,3 +21,20 @@ def test_offline_summarises_after_transcript():
     )
     assert d.kind == "final"
     assert "echo-planner" in d.text
+
+
+def test_parse_multiline_tool_block():
+    """Real local models emit TOOL: name\\n{json} — parser must handle."""
+    r = LLMRouter(force="offline")
+    d = r._parse_decision(
+        'TOOL: search\n{"pattern": "MemoryManager", "root": "."}\nsome trailing prose',
+        ["search", "execute"],
+    )
+    assert d.kind == "tool_call" and d.tool_name == "search"
+    assert d.tool_args == {"pattern": "MemoryManager", "root": "."}
+
+
+def test_parse_final_anywhere():
+    r = LLMRouter(force="offline")
+    d = r._parse_decision("Looking at the results... FINAL: done", ["search"])
+    assert d.kind == "final" and d.text == "done"

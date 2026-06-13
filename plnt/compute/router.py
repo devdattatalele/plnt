@@ -145,19 +145,40 @@ class LLMRouter:
 
     def _parse_decision(self, text: str, tools: list[str]) -> Decision:
         stripped = text.strip()
-        m = re.match(r"^\s*TOOL:\s*(\{.*\})\s*$", stripped, re.DOTALL)
+
+        # Form 1: TOOL: {...}    — single line or multi-line JSON blob.
+        # Form 2: TOOL: name\n{...}   — common with smaller local models.
+        # Form 3: TOOL: name(args)    — even smaller models do this.
+        m = re.search(r"TOOL:\s*(\w+)?\s*(\{.*\})", stripped, re.DOTALL)
         if m:
+            blob_text = m.group(2)
+            # Trim trailing prose after the JSON ends.
+            depth = 0
+            end = -1
+            for i, ch in enumerate(blob_text):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end > 0:
+                blob_text = blob_text[:end]
             try:
-                blob = json.loads(m.group(1))
-                tool = str(blob.get("tool"))
-                args = blob.get("args") or {}
+                blob = json.loads(blob_text)
+                # Some models emit {"tool":"x","args":{...}}; others put the
+                # tool name in the TOOL: header. Accept either.
+                tool = str(blob.get("tool") or (m.group(1) or "")).strip()
+                args = blob.get("args") if "args" in blob else {k: v for k, v in blob.items() if k != "tool"}
                 if tool in tools:
-                    return Decision(kind="tool_call", tool_name=tool, tool_args=args, text=stripped)
+                    return Decision(kind="tool_call", tool_name=tool, tool_args=args or {}, text=stripped)
             except (json.JSONDecodeError, TypeError):
                 pass
-        # FINAL or anything else falls through to a final answer.
-        if stripped.startswith("FINAL:"):
-            return Decision(kind="final", text=stripped[len("FINAL:"):].strip())
+
+        if "FINAL:" in stripped:
+            tail = stripped.split("FINAL:", 1)[1].strip()
+            return Decision(kind="final", text=tail)
         return Decision(kind="final", text=stripped)
 
     # --------------------------------------------------------- offline path
