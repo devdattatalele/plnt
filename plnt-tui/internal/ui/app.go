@@ -308,6 +308,27 @@ func (m *Model) applyEventToTurn(evt client.Event) {
 		if src, ok := evt.Payload["source"].(string); ok {
 			t.Source = src
 		}
+	case "finished":
+		// Per-agent finished events carry workdir + file_count. Aggregate
+		// them so the chat footer shows the total and 📁 paths appear.
+		if evt.AgentID == "" {
+			return
+		}
+		if wd, ok := evt.Payload["workdir"].(string); ok && wd != "" {
+			seen := false
+			for _, x := range t.Workdirs {
+				if x == wd {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				t.Workdirs = append(t.Workdirs, wd)
+			}
+		}
+		if fc, ok := evt.Payload["file_count"].(float64); ok {
+			t.FileCount += int(fc)
+		}
 	}
 }
 
@@ -423,8 +444,24 @@ func (m Model) renderAgentRow(a *AgentView) string {
 	if a.LastTool != "" {
 		tail = Subtle.Render(fmt.Sprintf(" · %s(%s)", a.LastTool, a.LastArgs))
 	}
-	return fmt.Sprintf("  %s %-13s  %s%s  %2d tools  %5s%s",
+	main := fmt.Sprintf("  %s %-13s  %s%s  %2d tools  %5s%s",
 		st, idShort(a.ID), Accent.Render(padRight(a.Role, 22)), deps, a.ToolCalls, a.Elapsed(), tail)
+	if a.Workdir != "" || a.FileCount > 0 {
+		wd := shortenPath(a.Workdir, m.width-14)
+		fc := ""
+		if a.FileCount > 0 {
+			fc = fmt.Sprintf(" · %d file(s)", a.FileCount)
+		}
+		main += "\n     " + Subtle.Render("📁 "+wd+fc)
+	}
+	return main
+}
+
+func shortenPath(p string, max int) string {
+	if max < 20 || len(p) <= max {
+		return p
+	}
+	return "…" + p[len(p)-max+1:]
 }
 
 func (m Model) renderPrompt() string {

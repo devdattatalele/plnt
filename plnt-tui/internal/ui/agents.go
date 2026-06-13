@@ -25,6 +25,9 @@ type AgentView struct {
 	ExitCode   int
 	KillReason string
 	DependsOn  []string
+	Workdir    string
+	FileCount  int
+	Files      []string
 }
 
 func (a *AgentView) Elapsed() time.Duration {
@@ -107,6 +110,9 @@ func (s *SwarmState) Apply(e client.Event) {
 		if d, ok := e.Payload["depth"].(float64); ok {
 			av.Depth = int(d)
 		}
+		if wd, ok := e.Payload["workdir"].(string); ok {
+			av.Workdir = wd
+		}
 		av.Status = "spawned"
 	case "started":
 		av := s.touch(e.AgentID)
@@ -170,6 +176,19 @@ func (s *SwarmState) Apply(e client.Event) {
 			av.FinishedAt = time.Now()
 			if rc, ok := e.Payload["exit_code"].(float64); ok {
 				av.ExitCode = int(rc)
+			}
+			if wd, ok := e.Payload["workdir"].(string); ok && wd != "" {
+				av.Workdir = wd
+			}
+			if fc, ok := e.Payload["file_count"].(float64); ok {
+				av.FileCount = int(fc)
+			}
+			if files, ok := e.Payload["files_written"].([]interface{}); ok {
+				for _, f := range files {
+					if s, ok := f.(string); ok {
+						av.Files = append(av.Files, s)
+					}
+				}
 			}
 		} else {
 			s.Finished = true

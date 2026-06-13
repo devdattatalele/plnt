@@ -10,11 +10,13 @@ type Turn struct {
 	RunID      string
 	Prompt     string
 	Answer     string
-	Source     string // "triage" | "agent" | "synth" | "fallback" | "" (in-flight)
+	Source     string // "triage" | "agent" | "synth" | "fallback" | "clarify" | "" (in-flight)
 	TriageKind string
 	AgentCount int
 	StartedAt  time.Time
 	FinishedAt time.Time
+	Workdirs   []string // distinct workdirs used by agents in this turn
+	FileCount  int      // total files written across all agents
 }
 
 func (t Turn) Elapsed() time.Duration {
@@ -88,10 +90,17 @@ func renderTurn(t Turn, w int) string {
 	if t.AgentCount > 0 {
 		footer = append(footer, Subtle.Render(formatAgentCount(t.AgentCount)))
 	}
+	if t.FileCount > 0 {
+		footer = append(footer, Accent.Render(digitString(t.FileCount)+" file(s) written"))
+	}
 	if !t.InFlight() {
 		footer = append(footer, Subtle.Render(t.Elapsed().String()))
 	}
 	lines = append(lines, "     "+strings.Join(footer, " · "))
+	// Workdir line — show distinct paths used by this turn's agents.
+	for _, wd := range t.Workdirs {
+		lines = append(lines, "     "+Subtle.Render("📁 "+wd))
+	}
 	return strings.Join(lines, "\n")
 }
 

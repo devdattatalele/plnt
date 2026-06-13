@@ -43,8 +43,28 @@ class ProcessSandbox:
     def run(self, spec: AgentSpec) -> SandboxResult:
         started = time.monotonic()
 
-        # 1. Carve out an ephemeral workdir.
-        workdir = Path(tempfile.mkdtemp(prefix=f"plnt-{spec.id}-"))
+        # 1. Pick a workdir.
+        #    If the agent's inputs specify output_dir, use it directly (the
+        #    user wants persistent work, e.g. building a website at
+        #    ~/portfolio-site). Otherwise: carve out a per-run persistent
+        #    workdir under $PLNT_HOME/runs/<run>/work/<agent>/ so we never
+        #    throw away what the agent wrote.
+        from plnt.config import paths as _paths
+
+        explicit_out = None
+        if isinstance(spec.inputs, dict):
+            explicit_out = spec.inputs.get("output_dir") or spec.inputs.get("workdir")
+
+        if explicit_out:
+            workdir = Path(str(explicit_out)).expanduser().resolve()
+            workdir.mkdir(parents=True, exist_ok=True)
+            workdir_is_explicit = True
+        else:
+            base = _paths().runs / spec.run_id / "work" / spec.id
+            workdir = base
+            workdir.mkdir(parents=True, exist_ok=True)
+            workdir_is_explicit = False
+
         try:
             self.bb.emit(
                 "spawn",
@@ -57,6 +77,7 @@ class ProcessSandbox:
                     "tools": spec.tools,
                     "model_hint": spec.model_hint,
                     "workdir": str(workdir),
+                    "workdir_persistent": True,
                 },
             )
 
@@ -123,6 +144,18 @@ class ProcessSandbox:
                 self.bb.emit("log", agent_id=spec.id, payload={"stderr": stderr[:4000]})
 
             wall = time.monotonic() - started
+
+            # Capture the file manifest the agent created so the user can
+            # see what work landed where.
+            try:
+                files_written = sorted(
+                    str(p.relative_to(workdir))
+                    for p in workdir.rglob("*")
+                    if p.is_file()
+                )
+            except Exception:
+                files_written = []
+
             self.bb.emit(
                 "finished",
                 agent_id=spec.id,
@@ -131,6 +164,9 @@ class ProcessSandbox:
                     "wall_seconds": round(wall, 3),
                     "killed": bool(self._kill_reason),
                     "kill_reason": self._kill_reason,
+                    "workdir": str(workdir),
+                    "files_written": files_written[:50],
+                    "file_count": len(files_written),
                 },
             )
 
@@ -145,7 +181,8 @@ class ProcessSandbox:
             )
 
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            # NEVER delete the workdir. The user wants to see what was built.
+            # Cleanup is the user's job (or `rm -rf $PLNT_HOME/runs/...`).
             self._proc = None
 
     # ----------------------------------------------------------- kill
