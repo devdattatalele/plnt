@@ -1,0 +1,186 @@
+"""LLM router — picks small vs. deep model, hides the backend.
+
+Two ports talked over OpenAI-compatible chat completions: small/fast (local
+Ollama) and deep (exo cluster, if reachable). When neither is up, the router
+falls back to a deterministic *echo planner* so the whole agent loop is
+testable offline.
+
+The runner only sees `step(system, user, transcript, tools, model_hint)` and
+gets back a `Decision`. It does not know which backend served it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import httpx
+
+from plnt.config import DEFAULT_COMPUTE_URL, DEFAULT_DEEP_MODEL, DEFAULT_PLANNER_MODEL
+
+
+@dataclass
+class Decision:
+    kind: Literal["tool_call", "final"]
+    tool_name: str | None = None
+    tool_args: dict[str, Any] | None = None
+    text: str = ""
+    tokens: int = 0
+    latency_ms: int = 0
+
+
+class LLMRouter:
+    """OpenAI-compatible chat router. Backend-agnostic."""
+
+    def __init__(
+        self,
+        small_url: str | None = None,
+        deep_url: str | None = None,
+        small_model: str | None = None,
+        deep_model: str | None = None,
+        timeout: float = 60.0,
+    ):
+        self.small_url = small_url or os.environ.get("PLNT_SMALL_URL") or DEFAULT_COMPUTE_URL
+        self.deep_url = deep_url or os.environ.get("PLNT_DEEP_URL") or self.small_url
+        self.small_model = small_model or DEFAULT_PLANNER_MODEL
+        self.deep_model = deep_model or DEFAULT_DEEP_MODEL
+        self.timeout = timeout
+
+    # ---------------------------------------------------------------- step
+
+    def step(
+        self,
+        *,
+        system: str,
+        user: str,
+        transcript: list[dict] | None = None,
+        tools: list[str] | None = None,
+        model_hint: str = "auto",
+    ) -> Decision:
+        url, model = self._pick(model_hint)
+        messages = self._build_messages(system, user, transcript or [], tools or [])
+
+        started = time.monotonic()
+        try:
+            text, tokens = self._call_openai_compat(url, model, messages)
+        except Exception:
+            # Backend unreachable → deterministic echo path. This keeps the
+            # runtime testable offline and during outages.
+            return self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        decision = self._parse_decision(text, tools or [])
+        decision.tokens = tokens
+        decision.latency_ms = latency_ms
+        return decision
+
+    # ------------------------------------------------------------- backends
+
+    def _pick(self, hint: str) -> tuple[str, str]:
+        if hint == "deep":
+            return self.deep_url, self.deep_model
+        if hint == "small":
+            return self.small_url, self.small_model
+        # auto: small for routing/planning, deep for long-tail reasoning.
+        return self.small_url, self.small_model
+
+    def _call_openai_compat(self, url: str, model: str, messages: list[dict]) -> tuple[str, int]:
+        endpoint = url.rstrip("/")
+        if not endpoint.endswith("/v1/chat/completions"):
+            # Ollama: native uses /api/chat; OpenAI shim is at /v1/chat/completions.
+            if "/v1" not in endpoint:
+                endpoint = endpoint + "/v1/chat/completions"
+            else:
+                endpoint = endpoint + "/chat/completions"
+        payload = {"model": model, "messages": messages, "stream": False}
+        with httpx.Client(timeout=self.timeout) as client:
+            r = client.post(endpoint, json=payload)
+            r.raise_for_status()
+            data = r.json()
+        text = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        tokens = int(usage.get("total_tokens") or 0)
+        return text, tokens
+
+    # ---------------------------------------------------------- prompt I/O
+
+    def _build_messages(
+        self, system: str, user: str, transcript: list[dict], tools: list[str]
+    ) -> list[dict]:
+        suffix = (
+            "\n\nYou must respond with one of:\n"
+            "  TOOL: {json: {\"tool\": \"search|execute\", \"args\": {...}}}\n"
+            "  FINAL: <plain text answer>\n"
+            f"Available tools this turn: {tools}\n"
+        )
+        msgs = [{"role": "system", "content": (system + suffix).strip()}]
+        for t in transcript:
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[step {t.get('step')}] called {t.get('tool')} with {t.get('args')}; "
+                        f"result: {json.dumps(t.get('result'), default=str)[:1500]}"
+                    ),
+                }
+            )
+        msgs.append({"role": "user", "content": user})
+        return msgs
+
+    def _parse_decision(self, text: str, tools: list[str]) -> Decision:
+        stripped = text.strip()
+        m = re.match(r"^\s*TOOL:\s*(\{.*\})\s*$", stripped, re.DOTALL)
+        if m:
+            try:
+                blob = json.loads(m.group(1))
+                tool = str(blob.get("tool"))
+                args = blob.get("args") or {}
+                if tool in tools:
+                    return Decision(kind="tool_call", tool_name=tool, tool_args=args, text=stripped)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # FINAL or anything else falls through to a final answer.
+        if stripped.startswith("FINAL:"):
+            return Decision(kind="final", text=stripped[len("FINAL:"):].strip())
+        return Decision(kind="final", text=stripped)
+
+    # --------------------------------------------------------- offline path
+
+    def _echo_step(
+        self, *, system: str, user: str, transcript: list[dict], tools: list[str]
+    ) -> Decision:
+        """No backend reachable — give the runner a deterministic answer.
+
+        Step 1 (no transcript): call search() with a token derived from the
+        user message. Step 2+: return a FINAL summary of what was found.
+        This keeps tests green and demos functional during dev.
+        """
+        if not transcript and "search" in tools:
+            token = self._keyword(user)
+            return Decision(
+                kind="tool_call",
+                tool_name="search",
+                tool_args={"pattern": token, "root": "."},
+                tokens=0,
+                latency_ms=0,
+            )
+        # Summarise prior tool results into a FINAL.
+        last = transcript[-1] if transcript else {}
+        summary = (
+            f"echo-planner: intent={user[:120]!r}; tools_called={len(transcript)}; "
+            f"last_tool={last.get('tool')}; last_result_keys="
+            f"{list(last.get('result', {}).keys()) if isinstance(last.get('result'), dict) else 'list'}"
+        )
+        return Decision(kind="final", text=summary, tokens=0, latency_ms=0)
+
+    @staticmethod
+    def _keyword(user: str) -> str:
+        # Cheap noun-ish extraction: longest alphanumeric token over 3 chars.
+        words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", user)
+        if not words:
+            return "."
+        return max(words, key=len)
