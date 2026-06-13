@@ -161,10 +161,17 @@ class LLMRouter:
         """
         if not transcript and "search" in tools:
             token = self._keyword(user)
+            import os
+            root = "."
+            roots_env = os.environ.get("PLNT_SEARCH_ROOTS", "")
+            if roots_env:
+                first = roots_env.split(":")[0].strip()
+                if first:
+                    root = first
             return Decision(
                 kind="tool_call",
                 tool_name="search",
-                tool_args={"pattern": token, "root": "."},
+                tool_args={"pattern": token, "root": root},
                 tokens=0,
                 latency_ms=0,
             )

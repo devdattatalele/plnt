@@ -183,6 +183,10 @@ class ProcessSandbox:
             time.sleep(0.2)
 
     def _build_env(self, spec: AgentSpec, workdir: Path) -> dict[str, str]:
+        # Pass declared search roots to the child so the offline echo planner
+        # picks a useful default root.
+        search_roots = spec.inputs.get("search_roots", []) if isinstance(spec.inputs, dict) else []
+        roots_str = ":".join(str(r) for r in search_roots) if isinstance(search_roots, list) else ""
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(workdir),  # box the agent's $HOME inside the workdir
@@ -192,6 +196,7 @@ class ProcessSandbox:
             "PLNT_WORKDIR": str(workdir),
             "PLNT_BLACKBOARD_DIR": str(self.bb.dir),
             "PLNT_HOME": os.environ.get("PLNT_HOME", ""),
+            "PLNT_SEARCH_ROOTS": roots_str,
             # Compute endpoint is inherited from the parent.
             "PLNT_COMPUTE_URL": os.environ.get("PLNT_COMPUTE_URL", ""),
         }
