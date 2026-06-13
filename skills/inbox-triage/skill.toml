@@ -1,0 +1,37 @@
+[meta]
+name = "inbox-triage"
+version = "0.2"
+description = "Categorises Downloads / mail exports / message archives into action buckets"
+tags = ["inbox", "downloads", "triage", "cleanup"]
+
+[runtime]
+model_hint = "small"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 10_000
+wall_seconds = 300
+joules = 0
+
+[[requires.inputs]]
+name = "inbox_root"
+type = "directory"
+description = "Folder to triage"
+example = "~/Downloads"
+
+[output]
+schema = "object"
+required = ["summary"]
+
+[output.properties.summary]
+type = "string"
+format = "markdown"
+
+[output.properties.table]
+type = "string"
+format = "html"
+description = "HTML table: file × category × suggested action"
+
+[graph]
+can_spawn = []

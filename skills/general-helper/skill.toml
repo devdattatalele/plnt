@@ -1,0 +1,29 @@
+[meta]
+name = "general-helper"
+version = "0.2"
+description = "Fallback specialist for any task that doesn't match a more specific skill"
+tags = ["general", "fallback"]
+
+[runtime]
+model_hint = "small"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 12_000
+wall_seconds = 180
+joules = 0
+
+# No required inputs — general-helper is the catch-all and never blocks.
+
+[output]
+schema = "object"
+required = ["answer"]
+
+[output.properties.answer]
+type = "string"
+description = "Plain-text reply to the user"
+format = "markdown"
+
+[graph]
+can_spawn = []

@@ -1,0 +1,48 @@
+[meta]
+name = "research-librarian"
+version = "0.2"
+description = "Maintains the user's reading list and answers questions over their notes"
+tags = ["research", "library", "papers", "notes"]
+
+[runtime]
+model_hint = "deep"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 30_000
+wall_seconds = 600
+joules = 0
+
+[[requires.inputs]]
+name = "library_root"
+type = "directory"
+description = "Where the user's papers/notes live"
+example = "~/Documents/research"
+
+[[requires.optional]]
+name = "topic"
+type = "string"
+description = "Narrow the search to a topic"
+default = ""
+
+[output]
+schema = "object"
+required = ["summary"]
+
+[output.properties.summary]
+type = "string"
+format = "markdown"
+
+[output.properties.citations]
+type = "array"
+items = "path"
+description = "File paths cited in the summary"
+
+[output.properties.table]
+type = "string"
+format = "html"
+description = "Tabular cross-reference of sources × claims (HTML for rich render)"
+
+[graph]
+can_spawn = ["literature-scout", "paper-reader"]

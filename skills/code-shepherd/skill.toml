@@ -1,0 +1,49 @@
+[meta]
+name = "code-shepherd"
+version = "0.2"
+description = "Resident specialist for reading, reviewing, and modifying a code repository"
+tags = ["code", "review", "git", "refactor"]
+
+[runtime]
+model_hint = "deep"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 40_000
+wall_seconds = 900
+joules = 0
+
+[[requires.inputs]]
+name = "repo_root"
+type = "directory"
+description = "Absolute path to the code repository"
+example = "~/Documents/my-project"
+
+[[requires.optional]]
+name = "branch"
+type = "string"
+description = "Git branch to work on"
+default = "main"
+
+[output]
+schema = "object"
+required = ["summary"]
+
+[output.properties.summary]
+type = "string"
+description = "Plain-text summary of what the agent did"
+format = "markdown"
+
+[output.properties.files_touched]
+type = "array"
+items = "path"
+description = "Files the agent created or modified"
+
+[output.properties.diff]
+type = "string"
+description = "Proposed diff (HTML-formatted for rich display)"
+format = "html"
+
+[graph]
+can_spawn = ["file-reader", "test-runner", "diff-summarizer"]

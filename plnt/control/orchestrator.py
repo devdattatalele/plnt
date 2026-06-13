@@ -211,6 +211,27 @@ class Orchestrator:
             handle.results = []
             return handle
 
+        # --- deterministic clarification: if the likely skill needs inputs
+        #     the user didn't provide, ask BEFORE running anything ------------
+        if tri.kind != "needs_clarification":
+            from plnt.control.clarify import clarification_for_manifest, first_match
+
+            manifest = first_match(intent, self.skills)
+            if manifest:
+                clar = clarification_for_manifest(manifest, intent)
+                if clar:
+                    bb.emit("triage", payload={
+                        "kind": "needs_clarification",
+                        "reason": f"{manifest.role} requires: {','.join(clar.missing)}",
+                        "missing_info": clar.missing,
+                    })
+                    bb.emit("answer", payload={"text": clar.text, "source": "clarify", "missing_info": clar.missing})
+                    bb.emit("finished", payload={"spawned": 0, "completed": 0, "killed": 0})
+                    handle = RunHandle(run_id, intent, bb, budget, acc)
+                    handle.plan_text = f"clarify: {manifest.role} missing {clar.missing}"
+                    handle.results = []
+                    return handle
+
         # --- clarification path: ask the user before spawning ------------------
         if tri.kind == "needs_clarification":
             reply = tri.reply or "I need a bit more info before I can start. Could you share more detail?"
@@ -243,25 +264,9 @@ class Orchestrator:
         executor = DAGExecutor(bb, budget, acc)
         out = executor.run(specs)
 
-        # Produce the user-facing answer.
-        if out.outputs:
-            if len(out.outputs) == 1 and tri.kind == "simple_task":
-                # Single agent — use its answer verbatim. No need to round-trip
-                # through the synthesizer for a one-shot reply.
-                only = next(iter(out.outputs.values()))
-                ans = only.get("answer") if isinstance(only, dict) else None
-                if not ans:
-                    ans = str(only)[:2000]
-                bb.emit("answer", payload={"text": ans, "source": "agent"})
-            else:
-                bb.emit("synth_start")
-                answer = synthesize(intent, "swarm", out.outputs)
-                bb.emit("answer", payload={"text": answer, "source": "synth"})
-        elif tri.kind != "chat":
-            bb.emit("answer", payload={
-                "text": "(the agent(s) produced no output — try a more specific prompt with a path to search)",
-                "source": "fallback",
-            })
+        # Produce the user-facing answer. Always non-empty.
+        ans, source = _build_user_answer(intent, tri, out, specs)
+        bb.emit("answer", payload={"text": ans, "source": source})
 
         bb.emit("finished", payload={
             "spawned": out.spawned,
@@ -290,3 +295,54 @@ class Orchestrator:
             lines.append("")
         path.write_text("\n".join(lines), encoding="utf-8")
         return path
+
+
+def _build_user_answer(intent, tri, out, specs):
+    """Always return (text, source). Never empty."""
+    from plnt.control.synthesizer import synthesize
+
+    outputs = out.outputs or {}
+
+    if outputs:
+        # Single-agent simple_task → use the agent's answer verbatim.
+        if len(outputs) == 1 and tri.kind == "simple_task":
+            only = next(iter(outputs.values()))
+            ans = only.get("answer") if isinstance(only, dict) else None
+            if not ans:
+                ans = _concat_fallback(outputs)
+            return ans, "agent"
+        # Multi-agent → synth, with deterministic fallback.
+        answer = synthesize(intent, "swarm", outputs)
+        if answer and answer.strip() and "(no answer)" not in answer:
+            return answer, "synth"
+        return _concat_fallback(outputs), "fallback"
+
+    # Nothing — explain why.
+    return _no_output_fallback(intent, tri, specs), "fallback"
+
+
+def _concat_fallback(outputs: dict) -> str:
+    parts = []
+    for aid, out in outputs.items():
+        if not isinstance(out, dict):
+            parts.append(f"[{aid}] {str(out)[:300]}")
+            continue
+        ans = out.get("answer") or out.get("error") or ""
+        if ans:
+            parts.append(f"[{aid}] {ans}")
+    if parts:
+        return "\n\n".join(parts)
+    return "(every agent finished but none produced a useful answer)"
+
+
+def _no_output_fallback(intent: str, tri, specs) -> str:
+    roles = [s.role for s in (specs or [])]
+    bits = [f"No agent produced output for: {intent[:200]}"]
+    if roles:
+        bits.append(f"Spawned: {', '.join(roles)}.")
+    bits.append(
+        "Agents made model calls that returned empty or malformed tool calls. "
+        "Try a more concrete prompt with specific paths, or upgrade to a "
+        "stronger model (qwen2.5:7b-instruct or llama3.1:8b)."
+    )
+    return " ".join(bits)

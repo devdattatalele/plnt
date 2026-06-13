@@ -1,0 +1,39 @@
+[meta]
+name = "paper-reader"
+version = "0.2"
+description = "Ephemeral micro-agent: read one set of papers, emit structured notes"
+tags = ["research", "reader", "ephemeral"]
+
+[runtime]
+model_hint = "deep"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 25_000
+wall_seconds = 600
+joules = 0
+
+[[requires.inputs]]
+name = "papers"
+type = "list"
+description = "List of paper paths to read"
+example = "['~/Documents/research/foo.pdf', ...]"
+
+[[requires.optional]]
+name = "claim"
+type = "string"
+description = "Claim or keyword to search for in each paper"
+default = ""
+
+[output]
+schema = "object"
+required = ["notes"]
+
+[output.properties.notes]
+type = "array"
+items = "object"
+description = "List of {path, one_line, key_claim, caveats, citations}"
+
+[graph]
+can_spawn = []

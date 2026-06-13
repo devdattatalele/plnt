@@ -1,0 +1,39 @@
+[meta]
+name = "literature-scout"
+version = "0.2"
+description = "Ephemeral micro-agent: surface candidate papers for the librarian"
+tags = ["research", "scout", "ephemeral"]
+
+[runtime]
+model_hint = "small"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 8_000
+wall_seconds = 120
+joules = 0
+
+[[requires.inputs]]
+name = "library_root"
+type = "directory"
+description = "Where the user's papers live"
+example = "~/Documents/research"
+
+[[requires.inputs]]
+name = "query"
+type = "string"
+description = "What to look for"
+example = "agent memory"
+
+[output]
+schema = "object"
+required = ["candidates"]
+
+[output.properties.candidates]
+type = "array"
+items = "object"
+description = "List of {path, why} entries"
+
+[graph]
+can_spawn = []
