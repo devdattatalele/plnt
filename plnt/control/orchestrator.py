@@ -160,28 +160,65 @@ class Orchestrator:
         return self.start_swarm_with_id(intent, run_id)
 
     def start_swarm_with_id(self, intent: str, run_id: str, blackboard: Blackboard | None = None) -> RunHandle:
-        """Same as start_swarm but takes a pre-allocated run_id (and optionally a Blackboard).
+        """Triage → (chat | one agent | DAG fan-out) → synthesize.
 
-        The surface uses this so it can hand the run_id back to the TUI before
-        the swarm starts running, letting the TUI subscribe to SSE immediately.
+        - triage classifies the intent. "hi" returns kind=chat with a direct
+          reply; no agents are spawned.
+        - simple_task → one agent.
+        - complex_task → planner emits a DAG; DAGExecutor runs it; synthesizer
+          reconciles outputs into a single user-facing answer.
         """
+        from plnt.control.dag import DAGExecutor
         from plnt.control.planner_llm import llm_planner
+        from plnt.control.synthesizer import synthesize
+        from plnt.control.triage import triage
 
         bb = blackboard or Blackboard(run_id, root=self.runs_root)
         bb.emit("intent", payload={"text": intent})
         budget = BudgetGovernor(run_id, self.run_budget, blackboard=bb)
         acc = ACCMonitor()
 
-        bb.emit("planner_start", payload={"intent": intent})
-        specs = llm_planner(intent, self.skills)
+        bb.emit("triage_start")
+        tri = triage(intent)
+        bb.emit("triage", payload={"kind": tri.kind, "reason": tri.reason, "estimated_agents": tri.estimated_agents})
+
+        # --- chat path: no swarm, just reply ----------------------------------
+        if tri.kind == "chat":
+            answer = tri.reply or "(no reply)"
+            bb.emit("answer", payload={"text": answer, "source": "triage"})
+            bb.emit("finished", payload={"spawned": 0, "completed": 0, "killed": 0})
+            handle = RunHandle(run_id, intent, bb, budget, acc)
+            handle.plan_text = "chat: replied directly without spawning agents"
+            handle.results = []
+            return handle
+
+        # --- complex path: full plan + DAG ------------------------------------
+        if tri.kind == "complex_task":
+            bb.emit("planner_start", payload={"intent": intent})
+            specs = llm_planner(intent, self.skills)
+        else:
+            # simple_task: one direct agent, no planner LLM call
+            from plnt.control.planner_llm import _default_spec
+            specs = [_default_spec(intent, self.skills)]
+
         specs = [s.model_copy(update={"run_id": run_id}) for s in specs]
         bb.emit("plan", payload={
             "agent_count": len(specs),
-            "agents": [{"id": s.id, "role": s.role, "intent": s.inputs.get("intent", "")} for s in specs],
+            "agents": [
+                {"id": s.id, "role": s.role, "intent": s.inputs.get("intent", ""),
+                 "depends_on": s.inputs.get("depends_on", [])}
+                for s in specs
+            ],
         })
 
-        po = ParallelOrchestrator(bb, budget, acc)
-        out = po.fan_out(specs)
+        executor = DAGExecutor(bb, budget, acc)
+        out = executor.run(specs)
+
+        # Synthesize the final answer from all agents' outputs.
+        if out.outputs:
+            bb.emit("synth_start")
+            answer = synthesize(intent, "swarm", out.outputs)
+            bb.emit("answer", payload={"text": answer, "source": "synth"})
 
         bb.emit("finished", payload={
             "spawned": out.spawned,

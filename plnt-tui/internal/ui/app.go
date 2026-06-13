@@ -25,7 +25,6 @@ type runStartedMsg struct {
 type submitErrMsg struct{ err error }
 type eventMsg client.Event
 type streamEndedMsg struct{}
-type tickMsg struct{}
 
 // ---------------------------------------------------------------- stages
 
@@ -34,21 +33,27 @@ type stage int
 const (
 	stageIdle stage = iota
 	stageSubmitting
+	stageTriage
 	stagePlanning
 	stageRunning
+	stageSynth
 	stageDone
 )
 
 func (s stage) String() string {
 	switch s {
 	case stageIdle:
-		return "idle"
+		return "ready"
 	case stageSubmitting:
 		return "submitting"
+	case stageTriage:
+		return "triaging intent"
 	case stagePlanning:
 		return "planner thinking"
 	case stageRunning:
 		return "agents running"
+	case stageSynth:
+		return "synthesizing answer"
 	case stageDone:
 		return "done"
 	}
@@ -65,7 +70,7 @@ type Model struct {
 	height  int
 	input   textinput.Model
 	log     viewport.Model
-	logBuf  string // plain string — Model is copied by value in Update, strings.Builder panics on copy
+	logBuf  string
 	spinner spinner.Model
 	swarm   *SwarmState
 	health  client.Health
@@ -82,16 +87,17 @@ func SetProgram(p *tea.Program) { globalProgram = p }
 func New(baseURL string) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	ti := textinput.New()
+	ti.Prompt = "› "
 	ti.Placeholder = "type an intent and hit ⏎"
 	ti.Focus()
 	ti.CharLimit = 2000
 	ti.Width = 80
 
-	vp := viewport.New(80, 10)
+	vp := viewport.New(80, 8)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+	sp.Style = lipgloss.NewStyle().Foreground(colAccent)
 
 	return Model{
 		cli:     client.New(baseURL),
@@ -105,11 +111,7 @@ func New(baseURL string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		textinput.Blink,
-		m.spinner.Tick,
-		m.checkHealth(),
-	)
+	return tea.Batch(textinput.Blink, m.spinner.Tick, m.checkHealth())
 }
 
 // ---------------------------------------------------------------- commands
@@ -134,8 +136,6 @@ func (m Model) submit(text string) tea.Cmd {
 	}
 }
 
-// startStream kicks off the SSE subscription. Returns immediately.
-// All subsequent events flow into the program via globalProgram.Send.
 func (m *Model) startStream(runID string) tea.Cmd {
 	return func() tea.Msg {
 		ch := make(chan client.Event, 256)
@@ -150,7 +150,7 @@ func (m *Model) startStream(runID string) tea.Cmd {
 				globalProgram.Send(streamEndedMsg{})
 			}
 		}()
-		return nil // no immediate message
+		return nil
 	}
 }
 
@@ -202,7 +202,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runStartedMsg:
 		m.swarm = NewSwarm(msg.id, msg.intent)
-		m.stage = stagePlanning
+		m.stage = stageTriage
 		m.appendLog(Accent.Render("⤳    ") + "run started " + Subtle.Render(msg.id))
 		cmds = append(cmds, m.startStream(msg.id))
 
@@ -216,16 +216,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.swarm.Apply(evt)
 		}
 		m.appendEvent(evt)
-		// Stage transitions driven by events:
 		switch evt.Kind {
+		case "triage":
+			if m.swarm != nil && m.swarm.TriageKind == "chat" {
+				m.stage = stageDone
+			} else {
+				m.stage = stagePlanning
+			}
 		case "plan":
 			m.stage = stageRunning
-		case "spawn", "started":
-			if m.stage == stagePlanning {
-				m.stage = stageRunning
-			}
+		case "synth_start":
+			m.stage = stageSynth
 		case "finished":
-			if evt.AgentID == "" { // run-level finished
+			if evt.AgentID == "" {
 				m.stage = stageDone
 			}
 		}
@@ -247,14 +250,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ---------------------------------------------------------------- view
 
 func (m Model) View() string {
-	if m.width == 0 {
-		return "starting…"
+	if m.width < 60 || m.height < 16 {
+		return "plnt: resize terminal to at least 60×16"
 	}
 	header := m.renderHeader()
-	swarm := m.renderSwarm()
-	log := Box.Width(m.width - 2).Render(m.log.View())
+	statusBar := m.renderStatus()
+	swarm := m.renderSwarmPanel()
+	answer := m.renderAnswerPanel()
+	log := m.renderLogPanel()
 	prompt := m.renderPrompt()
-	return lipgloss.JoinVertical(lipgloss.Left, header, swarm, log, prompt)
+
+	sections := []string{header, statusBar, swarm}
+	if answer != "" {
+		sections = append(sections, answer)
+	}
+	sections = append(sections, log, prompt)
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 func (m Model) renderHeader() string {
@@ -264,93 +276,118 @@ func (m Model) renderHeader() string {
 		state = "connected"
 		color = OK
 	}
-	plnt := Title.Render("plnt")
-	st := color.Render("● " + state)
-	url := Subtle.Render(m.cli.BaseURL)
-	help := Subtle.Render("⏎ submit · ⎋ clear · ^C quit")
-	return lipgloss.NewStyle().Padding(0, 1).Render(
-		fmt.Sprintf("%s  %s  %s   %s", plnt, st, url, help),
+	left := fmt.Sprintf("%s  %s  %s",
+		Title.Render("plnt"),
+		color.Render("● "+state),
+		Subtle.Render(m.cli.BaseURL),
 	)
+	right := Subtle.Render("⏎ submit · ⎋ clear · ^C quit")
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	return lipgloss.NewStyle().Padding(0, 1).Render(left + strings.Repeat(" ", gap) + right)
 }
 
-func (m Model) renderSwarm() string {
-	// Always render the panel — even when idle — so the user has somewhere
-	// to watch state appear.
-	header := ""
-	switch m.stage {
-	case stageIdle:
-		header = Subtle.Render("waiting for an intent. type one below and press ⏎.")
-	case stageSubmitting:
-		header = fmt.Sprintf("%s submitting intent…", m.spinner.View())
-	case stagePlanning:
-		header = fmt.Sprintf("%s planner thinking — deciding how many agents to spawn…", m.spinner.View())
-	case stageRunning:
-		if m.swarm != nil {
-			header = fmt.Sprintf("%s %d agent(s) running · %d killed", m.spinner.View(),
-				len(m.swarm.Agents), m.swarm.Killed)
-		} else {
-			header = fmt.Sprintf("%s running", m.spinner.View())
+func (m Model) renderStatus() string {
+	line := fmt.Sprintf("%s %s", m.spinner.View(), Accent.Render(m.stage.String()))
+	if m.swarm != nil && m.swarm.TriageKind != "" {
+		tag := Subtle.Render(fmt.Sprintf("triage=%s", m.swarm.TriageKind))
+		line += "  " + tag
+		if m.swarm.TriageReason != "" {
+			line += "  " + Subtle.Render(m.swarm.TriageReason)
 		}
-	case stageDone:
-		header = OK.Render("✓ done")
+	}
+	if m.stage == stageDone {
+		line = OK.Render("✓ ") + Accent.Render("done")
+	}
+	return lipgloss.NewStyle().Padding(0, 2).Render(line)
+}
+
+func (m Model) renderSwarmPanel() string {
+	w := m.width - 2
+	focused := m.stage == stageRunning || m.stage == stageSynth
+	style := PanelStyle(w, focused)
+
+	rows := []string{HeaderLabel("swarm")}
+	if m.swarm == nil {
+		rows = append(rows, Subtle.Render("  no run yet — type an intent below."))
+		return style.Render(strings.Join(rows, "\n"))
 	}
 
-	rows := []string{header}
+	rows = append(rows,
+		Subtle.Render("intent: ")+m.swarm.Intent,
+		Subtle.Render(fmt.Sprintf("run %s · %s", m.swarm.RunID, m.swarm.PlanText)),
+	)
 
-	if m.intent != "" {
-		rows = append(rows, Subtle.Render("intent: ")+m.intent)
-	}
-	if m.swarm != nil {
-		rows = append(rows, Subtle.Render(fmt.Sprintf("run %s · %s", m.swarm.RunID, m.swarm.Plan)))
-		rows = append(rows, "")
-
+	if m.swarm.TriageKind == "chat" {
+		rows = append(rows, Chat.Render("  (chat — no agents spawned, planner replied directly)"))
+	} else {
 		agents := m.swarm.Sorted()
 		if len(agents) == 0 {
-			rows = append(rows, Subtle.Render("  (no agents spawned yet — waiting for plan event)"))
+			rows = append(rows, Subtle.Render("  (waiting for the planner to emit agents…)"))
 		}
 		for _, a := range agents {
 			rows = append(rows, m.renderAgentRow(a))
 		}
 	}
 
-	body := strings.Join(rows, "\n")
-	style := Box.Width(m.width - 2)
-	if m.stage == stageRunning || m.stage == stagePlanning || m.stage == stageSubmitting {
-		style = BoxFocused.Width(m.width - 2)
-	}
-	return style.Render(body)
+	return style.Render(strings.Join(rows, "\n"))
 }
 
 func (m Model) renderAgentRow(a *AgentView) string {
 	var st string
 	switch a.Status {
 	case "running":
-		st = AgentRunning.Render("● running")
+		st = AgentRunning.Render("● running ")
 	case "done":
-		st = AgentDone.Render("✓ done   ")
+		st = AgentDone.Render("✓ done    ")
 	case "killed":
-		st = AgentKilled.Render("☠ killed ")
+		st = AgentKilled.Render("☠ killed  ")
 	case "error":
-		st = AgentKilled.Render("☠ error  ")
+		st = AgentKilled.Render("☠ error   ")
 	case "spawned":
-		st = Subtle.Render("◌ spawned")
+		st = AgentWaiting.Render("◌ pending ")
 	default:
-		st = Subtle.Render(a.Status)
+		st = AgentWaiting.Render(a.Status)
+	}
+	deps := ""
+	if len(a.DependsOn) > 0 {
+		deps = Subtle.Render(fmt.Sprintf(" ← %s", strings.Join(a.DependsOn, ",")))
 	}
 	tail := ""
 	if a.LastTool != "" {
-		tail = Subtle.Render(fmt.Sprintf("· %s(%s)", a.LastTool, a.LastArgs))
+		tail = Subtle.Render(fmt.Sprintf(" · %s(%s)", a.LastTool, a.LastArgs))
 	}
-	return fmt.Sprintf("  %s  %-14s  %s  %2d tools  %5s  %s",
-		st, idShort(a.ID), Accent.Render(padRight(a.Role, 18)), a.ToolCalls, a.Elapsed(), tail)
+	return fmt.Sprintf("  %s %-13s  %s%s  %2d tools  %5s%s",
+		st, idShort(a.ID), Accent.Render(padRight(a.Role, 22)), deps, a.ToolCalls, a.Elapsed(), tail)
+}
+
+func (m Model) renderAnswerPanel() string {
+	if m.swarm == nil || m.swarm.Answer == "" {
+		return ""
+	}
+	style := PanelStyle(m.width-2, m.stage == stageDone)
+	source := m.swarm.AnswerSource
+	if source == "" {
+		source = "answer"
+	}
+	rows := []string{
+		HeaderLabel("answer · " + source),
+		wrap(m.swarm.Answer, m.width-6),
+	}
+	return style.BorderForeground(colAnswer).Render(strings.Join(rows, "\n"))
+}
+
+func (m Model) renderLogPanel() string {
+	style := PanelStyle(m.width-2, false)
+	body := HeaderLabel("event log") + "\n" + m.log.View()
+	return style.Render(body)
 }
 
 func (m Model) renderPrompt() string {
-	prefix := "> "
-	if m.stage == stageSubmitting || m.stage == stagePlanning || m.stage == stageRunning {
-		prefix = m.spinner.View() + " "
-	}
-	return Box.Width(m.width - 2).Render(prefix + m.input.View())
+	style := PanelStyle(m.width-2, m.stage == stageIdle || m.stage == stageDone)
+	return style.Render(m.input.View())
 }
 
 func (m *Model) layout() {
@@ -358,13 +395,12 @@ func (m *Model) layout() {
 		return
 	}
 	m.input.Width = m.width - 8
-	// Reserve: header (1) + swarm panel (variable) + prompt (3). Give the log
-	// the rest.
-	logHeight := m.height - 18
+	// Roughly: header(1) + status(1) + swarm(8-12) + answer(0 or 5) + log(?) + prompt(3)
+	logHeight := m.height - 22
 	if logHeight < 4 {
 		logHeight = 4
 	}
-	m.log.Width = m.width - 4
+	m.log.Width = m.width - 6
 	m.log.Height = logHeight
 }
 
@@ -373,10 +409,7 @@ func (m *Model) appendLog(line string) {
 		m.logBuf += "\n"
 	}
 	m.logBuf += line
-	// Cap the buffer at ~2000 lines so it doesn't grow unbounded for long
-	// sessions. We trim from the front.
 	if len(m.logBuf) > 200_000 {
-		// drop the oldest ~50KB
 		if i := strings.IndexByte(m.logBuf[50_000:], '\n'); i >= 0 {
 			m.logBuf = m.logBuf[50_000+i+1:]
 		}
@@ -388,6 +421,14 @@ func (m *Model) appendLog(line string) {
 func (m *Model) appendEvent(e client.Event) {
 	pre := ""
 	switch e.Kind {
+	case "intent":
+		pre = Accent.Render("intent")
+	case "triage_start":
+		pre = Subtle.Render("triage")
+	case "triage":
+		pre = Accent.Render("triage")
+	case "planner_start":
+		pre = Subtle.Render("plan→ ")
 	case "plan":
 		pre = Accent.Render("plan  ")
 	case "spawn":
@@ -404,23 +445,23 @@ func (m *Model) appendEvent(e client.Event) {
 		pre = Subtle.Render("←model")
 	case "result":
 		pre = OK.Render("✓ res ")
+	case "answer":
+		pre = Answer.Render("→ans  ")
+	case "synth_start":
+		pre = Accent.Render("synth ")
 	case "error":
 		pre = Err.Render("✗ err ")
 	case "killed":
 		pre = Err.Render("☠ kill")
 	case "finished":
 		pre = OK.Render("end   ")
-	case "intent":
-		pre = Accent.Render("intent")
-	case "planner_start":
-		pre = Accent.Render("plan→ ")
 	default:
 		pre = Subtle.Render(fmt.Sprintf("%-6s", e.Kind))
 	}
 	short := compactPayload(e)
 	id := e.AgentID
 	if id == "" {
-		id = "-"
+		id = "—"
 	}
 	m.appendLog(fmt.Sprintf("%s %s %s", pre, Subtle.Render(idShort(id)), short))
 }
@@ -447,6 +488,12 @@ func compactPayload(e client.Event) string {
 	case "plan":
 		c, _ := e.Payload["agent_count"].(float64)
 		return fmt.Sprintf("agents=%d", int(c))
+	case "triage":
+		kind, _ := e.Payload["kind"].(string)
+		return kind
+	case "answer":
+		src, _ := e.Payload["source"].(string)
+		return fmt.Sprintf("from %s", src)
 	case "killed", "error":
 		r, _ := e.Payload["reason"].(string)
 		if len(r) > 70 {
@@ -459,7 +506,6 @@ func compactPayload(e client.Event) string {
 			w, _ := e.Payload["wall_seconds"].(float64)
 			return fmt.Sprintf("exit=%d wall=%.1fs", int(rc), w)
 		}
-		// run-level finished has no exit_code
 		s, _ := e.Payload["spawned"].(float64)
 		return fmt.Sprintf("spawned=%d", int(s))
 	case "intent":
@@ -484,4 +530,33 @@ func padRight(s string, n int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", n-len(s))
+}
+
+// wrap word-wraps `text` to width `w`.
+func wrap(text string, w int) string {
+	if w < 10 {
+		return text
+	}
+	var out strings.Builder
+	for _, paragraph := range strings.Split(text, "\n") {
+		words := strings.Fields(paragraph)
+		line := ""
+		for _, word := range words {
+			if line == "" {
+				line = word
+				continue
+			}
+			if len(line)+1+len(word) > w {
+				out.WriteString(line + "\n")
+				line = word
+			} else {
+				line += " " + word
+			}
+		}
+		if line != "" {
+			out.WriteString(line)
+		}
+		out.WriteString("\n")
+	}
+	return strings.TrimRight(out.String(), "\n")
 }

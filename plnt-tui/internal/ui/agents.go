@@ -16,7 +16,7 @@ type AgentView struct {
 	Depth      int
 	StartedAt  time.Time
 	FinishedAt time.Time
-	Status     string // "spawned" | "running" | "done" | "killed" | "error"
+	Status     string // spawned|running|done|killed|error
 	LastTool   string
 	LastArgs   string
 	ToolCalls  int
@@ -24,6 +24,7 @@ type AgentView struct {
 	Backend    string
 	ExitCode   int
 	KillReason string
+	DependsOn  []string
 }
 
 func (a *AgentView) Elapsed() time.Duration {
@@ -36,15 +37,19 @@ func (a *AgentView) Elapsed() time.Duration {
 
 // SwarmState is the running picture of the swarm.
 type SwarmState struct {
-	RunID     string
-	Intent    string
-	Plan      string
-	Agents    map[string]*AgentView
-	Order     []string // stable display order
-	StartedAt time.Time
-	Finished  bool
-	Spawned   int
-	Killed    int
+	RunID         string
+	Intent        string
+	TriageKind    string
+	TriageReason  string
+	PlanText      string
+	Agents        map[string]*AgentView
+	Order         []string
+	StartedAt     time.Time
+	Finished      bool
+	Spawned       int
+	Killed        int
+	Answer        string // synthesized final answer or chat reply
+	AnswerSource  string // "synth" | "triage"
 }
 
 func NewSwarm(runID, intent string) *SwarmState {
@@ -60,12 +65,19 @@ func (s *SwarmState) Apply(e client.Event) {
 	switch e.Kind {
 	case "intent":
 		// already captured
+	case "triage_start":
+		s.PlanText = "triaging intent…"
+	case "triage":
+		kind, _ := e.Payload["kind"].(string)
+		reason, _ := e.Payload["reason"].(string)
+		s.TriageKind = kind
+		s.TriageReason = reason
 	case "planner_start":
-		s.Plan = "planning…"
+		s.PlanText = "planner thinking…"
 	case "plan":
 		count, _ := e.Payload["agent_count"].(float64)
 		s.Spawned = int(count)
-		s.Plan = fmt.Sprintf("planner emitted %d agents", s.Spawned)
+		s.PlanText = fmt.Sprintf("planner emitted %d agent(s)", s.Spawned)
 		if agents, ok := e.Payload["agents"].([]interface{}); ok {
 			for _, a := range agents {
 				if m, ok := a.(map[string]interface{}); ok {
@@ -74,8 +86,16 @@ func (s *SwarmState) Apply(e client.Event) {
 					if id == "" {
 						continue
 					}
-					s.touch(id).Role = role
-					s.touch(id).Status = "spawned"
+					av := s.touch(id)
+					av.Role = role
+					av.Status = "spawned"
+					if deps, ok := m["depends_on"].([]interface{}); ok {
+						for _, d := range deps {
+							if ds, ok := d.(string); ok {
+								av.DependsOn = append(av.DependsOn, ds)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -96,8 +116,7 @@ func (s *SwarmState) Apply(e client.Event) {
 			av.Role = role
 		}
 	case "model_call":
-		av := s.touch(e.AgentID)
-		av.Status = "running"
+		s.touch(e.AgentID).Status = "running"
 	case "model_result":
 		av := s.touch(e.AgentID)
 		if t, ok := e.Payload["tokens"].(float64); ok {
@@ -120,6 +139,9 @@ func (s *SwarmState) Apply(e client.Event) {
 		}
 		s.Killed++
 	case "error":
+		if e.AgentID == "" {
+			return
+		}
 		av := s.touch(e.AgentID)
 		if av.Status != "killed" {
 			av.Status = "error"
@@ -132,6 +154,13 @@ func (s *SwarmState) Apply(e client.Event) {
 		if av.Status != "killed" && av.Status != "error" {
 			av.Status = "done"
 		}
+	case "answer":
+		txt, _ := e.Payload["text"].(string)
+		src, _ := e.Payload["source"].(string)
+		s.Answer = txt
+		s.AnswerSource = src
+	case "synth_start":
+		s.PlanText = "synthesizing answer…"
 	case "finished":
 		if e.AgentID != "" {
 			av := s.touch(e.AgentID)
@@ -181,8 +210,8 @@ func compactArgs(m map[string]interface{}) string {
 	parts := []string{}
 	for k, v := range m {
 		s := fmt.Sprintf("%v", v)
-		if len(s) > 30 {
-			s = s[:27] + "…"
+		if len(s) > 28 {
+			s = s[:25] + "…"
 		}
 		parts = append(parts, fmt.Sprintf("%s=%s", k, s))
 	}
