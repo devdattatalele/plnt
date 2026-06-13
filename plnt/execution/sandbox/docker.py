@@ -271,7 +271,7 @@ class DockerSandbox:
         container_roots = []
         for i, _ in enumerate(roots if isinstance(roots, list) else []):
             container_roots.append(f"/roots/r{i}")
-        return {
+        env = {
             "PLNT_AGENT_ID": spec.id,
             "PLNT_RUN_ID": spec.run_id,
             "PLNT_ROLE": spec.role,
@@ -281,7 +281,10 @@ class DockerSandbox:
             "PLNT_COMPUTE_URL": os.environ.get("PLNT_COMPUTE_URL", "http://host.docker.internal:11434"),
             "PLNT_PLANNER_MODEL": os.environ.get("PLNT_PLANNER_MODEL", "llama3.2:3b"),
             "PLNT_DEEP_MODEL": os.environ.get("PLNT_DEEP_MODEL", "llama3.1:8b"),
-            "PLNT_CLOUD_URL": os.environ.get("PLNT_CLOUD_URL", ""),
-            "PLNT_CLOUD_SMALL_MODEL": os.environ.get("PLNT_CLOUD_SMALL_MODEL", ""),
-            "PLNT_CLOUD_API_KEY": os.environ.get("PLNT_CLOUD_API_KEY", ""),
         }
+        # Forward every other PLNT_* var (URLs, force flags, required path,
+        # cloud keys) so the container's backend_picker matches the host.
+        for k, v in os.environ.items():
+            if k.startswith("PLNT_") and k not in env:
+                env[k] = v
+        return env

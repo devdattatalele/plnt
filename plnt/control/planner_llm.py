@@ -32,8 +32,24 @@ PLANNER_SYSTEM = """\
 You are the Planner inside Plnt, a local multi-agent runtime.
 
 You decompose ONE complex user intent into a small graph of micro-agents.
-Each agent is short-lived, sandboxed, has exactly search() and execute()
-over allowed file paths, and produces structured output.
+Each agent is short-lived, sandboxed, and has TWO tools:
+
+  search(pattern, root)   — grep/find under allowed paths.
+  execute(argv)           — run a shell command. THIS IS POWERFUL:
+                             - mkdir, ls, cat, cp, mv, rm files
+                             - git init, git clone, git commit
+                             - npm/pnpm/yarn install, npm create vite
+                             - curl/wget to download templates
+                             - python -m / node scripts you write first
+                             - any other CLI tool installed on the host
+
+That means an agent CAN build a portfolio site, scaffold a project,
+deploy to vercel, etc. — by calling execute on the right argv. Plan
+agents accordingly.
+
+Use the conversation context if it's provided — the user may have
+answered an earlier clarifying question, and that information should
+guide your plan.
 
 Respond with ONE JSON object only — no prose, no code fences:
 
@@ -42,35 +58,39 @@ Respond with ONE JSON object only — no prose, no code fences:
   "agents": [
     {
       "id": "<short kebab-case id, must be unique within this plan>",
-      "role": "<descriptive role name; can be invented per task>",
-      "intent": "<focused sub-intent, outcome-shaped>",
+      "role": "<descriptive role name; specific to this task>",
+      "intent": "<focused sub-task outcome, written as a goal>",
       "search_roots": ["<absolute path>", ...],
       "model_hint": "small" | "deep",
-      "depends_on": ["<id of agent whose output this one needs>", ...]
+      "depends_on": ["<id of upstream agent>", ...]
     }
   ]
 }
 
 RULES:
-- Emit between 1 and 5 agents. Use fewer if the task is tightly coupled
-  or sequential. Critical Steps rule: more agents only helps if it
-  shortens the slowest path.
-- Use depends_on to chain agents whose output the next one needs.
-  Parallel branches → empty depends_on. Sequential pipeline → chain.
-- role names should be specific to the task (e.g. "log-grepper",
-  "diff-summarizer") — NOT generic. Anything goes; the framework will
-  give unknown roles a base persona.
-- search_roots are absolute paths the agent can read. Use $HOME or the
-  cwd if the user didn't name a path.
-- Do not invent tools beyond search and execute.
-- Final agent in a chain typically synthesizes the result for the user.
+- 1–6 agents. Use parallel branches when independent, depends_on chains
+  when output of one feeds the next.
+- Role names should be task-specific: "resume-reader",
+  "template-scout", "vite-scaffolder", "git-bootstrapper",
+  "deploy-helper", "review-critic".
+- search_roots default to $HOME if not given.
+- For construction tasks (build / scaffold / deploy / set up X), most
+  agents will rely on execute(), not search().
+- The final agent in a chain typically reviews or summarises.
+- Don't invent tools beyond search and execute — but be creative about
+  what you do with execute.
 """
 
 
-def llm_planner(intent: str, registry: SkillRegistry, router: LLMRouter | None = None) -> list[AgentSpec]:
+def llm_planner(
+    intent: str,
+    registry: SkillRegistry,
+    router: LLMRouter | None = None,
+    history: list | None = None,
+) -> list[AgentSpec]:
     """Return a list of AgentSpecs. Always non-empty."""
     router = router or LLMRouter()
-    user_msg = _build_user_msg(intent, registry)
+    user_msg = _build_user_msg(intent, registry, history or [])
 
     try:
         decision = router.step(
@@ -106,15 +126,27 @@ def llm_planner(intent: str, registry: SkillRegistry, router: LLMRouter | None =
     return specs
 
 
-def _build_user_msg(intent: str, registry: SkillRegistry) -> str:
-    lines = ["Available installed skills (you MAY use these role names, or invent new ones):"]
+def _build_user_msg(intent: str, registry: SkillRegistry, history: list | None) -> str:
+    lines: list[str] = []
+    if history:
+        lines.append("Recent conversation (oldest first):")
+        for t in (history or [])[-6:]:
+            p = getattr(t, "prompt", "") or (t.get("prompt", "") if isinstance(t, dict) else "")
+            a = getattr(t, "answer", "") or (t.get("answer", "") if isinstance(t, dict) else "")
+            if p:
+                lines.append(f"  user: {p}")
+            if a:
+                ans = a if len(a) <= 300 else a[:297] + "…"
+                lines.append(f"  plnt: {ans}")
+        lines.append("")
+    lines.append("Skills available on disk (you may invent new role names too):")
     for r in registry.list():
         sk = registry.get(r)
         if sk:
             head = sk.prompt.splitlines()[0] if sk.prompt else ""
             lines.append(f"- {r}: {head[:100]}")
     lines.append("")
-    lines.append(f"User intent: {intent}")
+    lines.append(f"Latest user intent: {intent}")
     lines.append(f"HOME: {os.path.expanduser('~')}")
     lines.append(f"CWD:  {os.getcwd()}")
     return "\n".join(lines)
@@ -210,10 +242,19 @@ def _default_persona(role: str) -> str:
     """System prompt for an LLM-invented role with no installed skill."""
     return (
         f"You are {role}, a single-purpose micro-agent in a Plnt swarm.\n"
-        "You have two tools: search(pattern, root) and execute(argv).\n"
-        "Do exactly what your inputs.intent says and nothing more.\n"
-        "If inputs.from_agents has outputs from prior agents, use them as ground truth.\n"
-        "Cite paths and line numbers. Stop when you have a concrete answer."
+        "Tools:\n"
+        "  search(pattern, root) — grep/find under allowed paths\n"
+        "  execute(argv)        — run shell. mkdir, ls, cat, cp, mv, rm,\n"
+        "                         git, npm, pnpm, curl, wget, python, node,\n"
+        "                         and any other host CLI work. You CAN build\n"
+        "                         and modify files, scaffold projects, init\n"
+        "                         repos, install packages.\n\n"
+        "Do what inputs.intent says. If inputs.from_agents includes outputs\n"
+        "from upstream agents, use them as ground truth.\n\n"
+        "Be concrete: prefer doing > talking. When the intent is a build or\n"
+        "setup task, USE execute to make it happen — don't just describe.\n"
+        "When done, return one short paragraph explaining what you did,\n"
+        "what worked, and what the user should check or run next."
     )
 
 

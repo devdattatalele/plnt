@@ -1,20 +1,15 @@
-"""Intent triage — decide whether to spawn agents at all.
+"""Intent triage — decide whether to spawn, ask back, or chat.
 
-Inspired by Kimi K2's pattern: tightly-coupled or trivial tasks get
-*zero* sub-agents. Spawning many agents for "hi" is the worst possible
-UX — coordination overhead with no parallelism payoff.
+Four outcomes:
 
-Triage runs the small model with a strict classification prompt and
-returns one of:
+  - chat                : casual reply, no work needed (greetings, factual Qs).
+  - needs_clarification : task-shaped, but critical info is missing.
+                          Reply asks for what's needed before any spawn.
+  - simple_task         : one well-scoped step, 1 agent.
+  - complex_task        : multi-step construction or research → planner DAG.
 
-  - chat          : greeting, small talk, factual Q&A the model can answer
-                    directly. Plnt responds in one shot, no spawn.
-  - simple_task   : one well-scoped action ("list files in X"). 1 agent.
-  - complex_task  : multi-step, parallelizable, or genuinely composite.
-                    Hand off to the planner for a real swarm.
-
-If triage itself fails (no model, bad parse), we degrade to `simple_task`
-so the user always gets *something*.
+Triage receives the recent conversation so it can recognise "they're
+answering my prior question" and shift to a real plan.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from plnt.compute.router import LLMRouter
@@ -30,50 +25,91 @@ from plnt.compute.router import LLMRouter
 logger = logging.getLogger(__name__)
 
 
-TriageKind = Literal["chat", "simple_task", "complex_task"]
+TriageKind = Literal["chat", "needs_clarification", "simple_task", "complex_task"]
+
+
+@dataclass
+class Turn:
+    """One past exchange — what the user asked, what we said."""
+
+    prompt: str = ""
+    answer: str = ""
 
 
 @dataclass
 class TriageResult:
     kind: TriageKind
-    reply: str = ""        # populated for kind=chat — the direct answer
-    reason: str = ""       # short why
+    reply: str = ""        # populated for chat / needs_clarification
+    reason: str = ""
     estimated_agents: int = 0
+    missing_info: list[str] = field(default_factory=list)
 
 
 TRIAGE_SYSTEM = """\
-You triage user intents in the Plnt local-agent runtime.
+You triage user intents in Plnt — a local multi-agent runtime that can:
+  - read and search files,
+  - run shell commands (git, npm, mkdir, curl, etc.),
+  - spawn multiple specialist sub-agents in parallel.
 
-For each intent, decide ONE category and respond with ONE JSON object only:
+You DO have memory of the recent conversation. Use it. If the user is
+answering a question you asked in the last turn, move on to the real plan
+— don't ask again.
 
-  - "chat" — greetings, small talk, casual questions, or factual questions
-    you can answer directly without filesystem access or tools. Also
-    include a "reply" field with the actual answer.
+For each user message, classify into ONE of:
 
-  - "simple_task" — one well-scoped operation that needs at most one
-    specialist (e.g. "list files in X", "search for Y in Z"). One agent
-    is enough.
+  "chat"
+    Casual reply, no work needed. Greetings, thanks, definitional Qs.
+    You must also include a "reply" field with the answer.
 
-  - "complex_task" — multi-step, composite, or research-style work that
-    benefits from parallel specialists or sequential pipeline.
+  "needs_clarification"
+    The user wants something done, but you genuinely cannot start without
+    more info. Include "reply" that asks the smallest number of pointed
+    questions to unblock you. Be helpful — propose defaults the user can
+    accept. Also fill "missing_info" with short labels.
+    DO NOT pick this if the conversation already gave you enough info.
 
-Schema:
-  {"kind": "chat" | "simple_task" | "complex_task",
-   "reply": "<answer text; only when kind=chat>",
-   "reason": "<one sentence>",
-   "estimated_agents": <0 for chat, 1 for simple, 2-5 for complex>}
+  "simple_task"
+    One well-scoped operation. One sub-agent will run.
 
-Be honest about complexity. Avoid spawning agents when a direct reply
-will do. "Hello", "what is 2+2", "thanks", "what's a kernel" → chat.
+  "complex_task"
+    Real construction or research that benefits from 2-6 specialist agents
+    in parallel or in a pipeline. Building a portfolio website (frontend
+    scaffold + template search + git init + deployment etc.) is complex.
+    Multi-source research is complex.
+
+Respond with ONE JSON object only, no prose, no code fences:
+
+  {
+    "kind": "chat" | "needs_clarification" | "simple_task" | "complex_task",
+    "reply": "<answer for chat OR clarifying question for needs_clarification>",
+    "missing_info": ["<short labels>", ...],
+    "reason": "<one sentence>",
+    "estimated_agents": <integer; 0 for chat/clarification, 1 for simple, 2-6 for complex>
+  }
+
+Rules:
+- Prefer needs_clarification over guessing — but ONLY when missing info
+  would force the agent to produce nothing useful.
+- If the user gave a project goal AND you have at least an output dir OR
+  the cwd, treat it as complex_task and let the planner ask agents to ask
+  more later if needed.
+- For known-incomplete tasks like "build a portfolio site" with no
+  resume/dir/stack mentioned: needs_clarification with a short list of
+  practical questions and proposed defaults.
 """
 
 
-def triage(intent: str, router: LLMRouter | None = None) -> TriageResult:
+def triage(
+    intent: str,
+    history: list[Turn] | None = None,
+    router: LLMRouter | None = None,
+) -> TriageResult:
     router = router or LLMRouter()
+    user_msg = _build_user(intent, history or [])
     try:
         decision = router.step(
             system=TRIAGE_SYSTEM,
-            user=intent,
+            user=user_msg,
             tools=[],
             model_hint="small",
             raw=True,
@@ -85,22 +121,49 @@ def triage(intent: str, router: LLMRouter | None = None) -> TriageResult:
 
     parsed = _extract_json(text)
     if not parsed:
-        # No model output → assume simple to be safe and useful.
-        return TriageResult(
-            kind="simple_task",
-            reason="triage unparseable → default simple",
-        )
+        return TriageResult(kind="simple_task", reason="triage unparseable → default simple")
 
     kind = str(parsed.get("kind", "")).strip()
-    if kind not in ("chat", "simple_task", "complex_task"):
+    if kind not in ("chat", "needs_clarification", "simple_task", "complex_task"):
         kind = "simple_task"
+
+    missing = parsed.get("missing_info") or []
+    if not isinstance(missing, list):
+        missing = []
+    missing = [str(x) for x in missing if isinstance(x, str)]
+
+    reply = str(parsed.get("reply", "")).strip()
+
+    # Code-level fix-up: small models often emit a clarifying question while
+    # still classifying as simple/complex. If the reply looks like a question
+    # and missing_info is non-empty, treat as needs_clarification — that's
+    # what the model wanted anyway.
+    looks_like_question = "?" in reply
+    if kind in ("simple_task", "complex_task") and looks_like_question and missing:
+        kind = "needs_clarification"
 
     return TriageResult(
         kind=kind,  # type: ignore[arg-type]
-        reply=str(parsed.get("reply", "")).strip(),
+        reply=reply,
         reason=str(parsed.get("reason", "")).strip(),
         estimated_agents=int(parsed.get("estimated_agents", 1) or 1),
+        missing_info=missing,
     )
+
+
+def _build_user(intent: str, history: list[Turn]) -> str:
+    parts: list[str] = []
+    if history:
+        parts.append("Recent conversation (oldest first):")
+        for t in history[-6:]:  # last 6 turns max
+            if t.prompt:
+                parts.append(f"  user: {t.prompt}")
+            if t.answer:
+                ans = t.answer if len(t.answer) <= 300 else t.answer[:297] + "…"
+                parts.append(f"  plnt: {ans}")
+        parts.append("")
+    parts.append(f"Latest user message: {intent}")
+    return "\n".join(parts)
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)

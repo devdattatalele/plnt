@@ -127,8 +127,17 @@ func (m Model) checkHealth() tea.Cmd {
 }
 
 func (m Model) submit(text string) tea.Cmd {
+	// Carry the last few completed turns as conversation memory.
+	hist := make([]client.PriorTurn, 0, 6)
+	for i := len(m.turns) - 1; i >= 0 && len(hist) < 6; i-- {
+		t := m.turns[i]
+		if t.InFlight() || t.Answer == "" {
+			continue
+		}
+		hist = append([]client.PriorTurn{{Prompt: t.Prompt, Answer: t.Answer}}, hist...)
+	}
 	return func() tea.Msg {
-		id, err := m.cli.Submit(m.ctx, text)
+		id, err := m.cli.Submit(m.ctx, text, hist)
 		if err != nil {
 			return submitErrMsg{err}
 		}

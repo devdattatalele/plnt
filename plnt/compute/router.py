@@ -35,6 +35,99 @@ class Decision:
     backend: str = "unknown"  # "local" | "cloud" | "offline" — audit field
 
 
+def _parse_call_args(tool: str, args_text: str) -> dict | None:
+    """Turn `TOOL: name(...)` parenthesised args into a dict the runner understands.
+
+    For execute() we map the argv array to {"argv": [...]}.
+    For search() we map positional ("pattern", "root") or a single string to
+    {"pattern": ..., "root": ...}.
+    """
+    # Try as a JSON array first: TOOL: execute([...])
+    try:
+        v = json.loads(args_text)
+    except (json.JSONDecodeError, TypeError):
+        v = None
+    if v is not None:
+        if tool == "execute" and isinstance(v, list):
+            argv = _normalize_argv(v)
+            return {"argv": argv} if argv else None
+        if tool == "search" and isinstance(v, list) and v:
+            d = {"pattern": str(v[0])}
+            if len(v) > 1:
+                d["root"] = str(v[1])
+            return d
+        if isinstance(v, dict):
+            return v
+
+    # Comma-split fallback: TOOL: search("pattern", "root")
+    parts = _split_call_args(args_text)
+    if not parts:
+        return None
+    cleaned = [_unquote(p) for p in parts]
+    if tool == "execute":
+        return {"argv": cleaned}
+    if tool == "search":
+        d = {"pattern": cleaned[0]}
+        if len(cleaned) > 1:
+            d["root"] = cleaned[1]
+        return d
+    return None
+
+
+def _normalize_argv(items: list) -> list[str]:
+    """Some models emit ['npx create-next-app foo'] (one shell string).
+    Split such single-string argvs into proper argv lists.
+    """
+    if len(items) == 1 and isinstance(items[0], str) and " " in items[0]:
+        import shlex
+        try:
+            return shlex.split(items[0])
+        except ValueError:
+            return [items[0]]
+    return [str(x) for x in items]
+
+
+def _split_call_args(s: str) -> list[str]:
+    """Split a function-call arg string on commas while respecting quotes."""
+    out: list[str] = []
+    cur = ""
+    depth = 0
+    in_str: str | None = None
+    for ch in s:
+        if in_str:
+            cur += ch
+            if ch == in_str:
+                in_str = None
+            continue
+        if ch in ('"', "'"):
+            in_str = ch
+            cur += ch
+            continue
+        if ch in "([{":
+            depth += 1
+            cur += ch
+            continue
+        if ch in ")]}":
+            depth -= 1
+            cur += ch
+            continue
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def _unquote(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] in ('"', "'") and s[-1] == s[0]:
+        return s[1:-1]
+    return s
+
+
 class LLMRouter:
     """OpenAI-compatible chat router. Backend-agnostic.
 
@@ -49,7 +142,7 @@ class LLMRouter:
         deep_url: str | None = None,
         small_model: str | None = None,
         deep_model: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = 240.0,  # CPU cold-start can take ~2 min on macOS without GPU
         force: Literal["auto", "local", "cloud", "offline"] = "auto",
     ):
         # Kept for back-compat; the picker is now the source of truth.
@@ -164,13 +257,13 @@ class LLMRouter:
     def _parse_decision(self, text: str, tools: list[str]) -> Decision:
         stripped = text.strip()
 
-        # Form 1: TOOL: {...}    — single line or multi-line JSON blob.
-        # Form 2: TOOL: name\n{...}   — common with smaller local models.
-        # Form 3: TOOL: name(args)    — even smaller models do this.
+        # Form 1: TOOL: {...}                    — JSON object
+        # Form 2: TOOL: name\n{...}              — name + JSON
+        # Form 3: TOOL: name([...])              — name + JSON-array args
+        # Form 4: TOOL: name(arg1, arg2, ...)    — Python-call form
         m = re.search(r"TOOL:\s*(\w+)?\s*(\{.*\})", stripped, re.DOTALL)
         if m:
             blob_text = m.group(2)
-            # Trim trailing prose after the JSON ends.
             depth = 0
             end = -1
             for i, ch in enumerate(blob_text):
@@ -185,14 +278,22 @@ class LLMRouter:
                 blob_text = blob_text[:end]
             try:
                 blob = json.loads(blob_text)
-                # Some models emit {"tool":"x","args":{...}}; others put the
-                # tool name in the TOOL: header. Accept either.
                 tool = str(blob.get("tool") or (m.group(1) or "")).strip()
                 args = blob.get("args") if "args" in blob else {k: v for k, v in blob.items() if k != "tool"}
                 if tool in tools:
                     return Decision(kind="tool_call", tool_name=tool, tool_args=args or {}, text=stripped)
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        # Form 3/4: TOOL: name([...])  or  TOOL: name("pattern", "root")
+        m2 = re.search(r"TOOL:\s*(\w+)\s*\((.*)\)", stripped, re.DOTALL)
+        if m2:
+            tool = m2.group(1).strip()
+            args_text = m2.group(2).strip()
+            if tool in tools:
+                args = _parse_call_args(tool, args_text)
+                if args is not None:
+                    return Decision(kind="tool_call", tool_name=tool, tool_args=args, text=stripped)
 
         # Strip a leading FINAL marker in any of its common forms.
         for marker in ("FINAL:", "FINAL\n", "FINAL "):

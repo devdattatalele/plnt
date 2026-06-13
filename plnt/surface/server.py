@@ -38,8 +38,14 @@ _paths.ensure()
 _orchestrator = Orchestrator()
 
 
+class PriorTurn(BaseModel):
+    prompt: str = ""
+    answer: str = ""
+
+
 class SubmitIntent(BaseModel):
     text: str
+    history: list[PriorTurn] = []  # conversation memory; oldest first
 
 
 class SubmitResult(BaseModel):
@@ -115,9 +121,13 @@ def submit_intent(req: SubmitIntent) -> SubmitResult:
     run_id = f"r-{uuid.uuid4().hex[:10]}"
     bb = Blackboard(run_id, root=_paths.runs)  # touches events.jsonl so SSE can subscribe
 
+    history = [{"prompt": t.prompt, "answer": t.answer} for t in req.history]
+
     def _run_swarm():
         try:
-            handle = _orchestrator.start_swarm_with_id(req.text, run_id, blackboard=bb)
+            handle = _orchestrator.start_swarm_with_id(
+                req.text, run_id, blackboard=bb, history=history,
+            )
             desktop = Path.home() / "Desktop"
             if desktop.exists():
                 _orchestrator.write_outcome(handle, desktop)

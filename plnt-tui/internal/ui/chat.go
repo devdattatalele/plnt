@@ -58,6 +58,8 @@ func renderTurn(t Turn, w int) string {
 	switch t.Source {
 	case "triage":
 		prefix = Chat.Render("plnt ")
+	case "clarify":
+		prefix = Accent.Render("plnt ")
 	case "agent":
 		prefix = Answer.Render("plnt ")
 	case "synth":
@@ -65,11 +67,7 @@ func renderTurn(t Turn, w int) string {
 	case "fallback":
 		prefix = Err.Render("plnt ")
 	default:
-		if t.InFlight() {
-			prefix = Subtle.Render("plnt ")
-		} else {
-			prefix = Subtle.Render("plnt ")
-		}
+		prefix = Subtle.Render("plnt ")
 	}
 
 	body := t.Answer

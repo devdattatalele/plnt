@@ -38,3 +38,30 @@ def test_parse_final_anywhere():
     r = LLMRouter(force="offline")
     d = r._parse_decision("Looking at the results... FINAL: done", ["search"])
     assert d.kind == "final" and d.text == "done"
+
+
+def test_parse_tool_paren_array_form():
+    """Real local models emit TOOL: execute(["cmd", "arg"]) — must work."""
+    r = LLMRouter(force="offline")
+    d = r._parse_decision('TOOL: execute(["echo", "hi"])', ["search", "execute"])
+    assert d.kind == "tool_call" and d.tool_name == "execute"
+    assert d.tool_args == {"argv": ["echo", "hi"]}
+
+
+def test_parse_tool_paren_single_shell_string():
+    """TOOL: execute(["npx create-next-app foo"]) → shlex-split into argv."""
+    r = LLMRouter(force="offline")
+    d = r._parse_decision('TOOL: execute(["npx create-next-app foo"])', ["execute"])
+    assert d.kind == "tool_call" and d.tool_args["argv"] == ["npx", "create-next-app", "foo"]
+
+
+def test_parse_tool_search_paren_form():
+    r = LLMRouter(force="offline")
+    d = r._parse_decision('TOOL: search("MemoryManager", "/tmp")', ["search"])
+    assert d.kind == "tool_call" and d.tool_args == {"pattern": "MemoryManager", "root": "/tmp"}
+
+
+def test_parse_final_prefix_no_colon():
+    r = LLMRouter(force="offline")
+    d = r._parse_decision("FINAL building a site is...", ["search"])
+    assert d.kind == "final" and d.text.startswith("building")

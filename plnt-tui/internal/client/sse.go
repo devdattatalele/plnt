@@ -52,15 +52,23 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	return h, json.NewDecoder(r.Body).Decode(&h)
 }
 
+// PriorTurn is one past Q&A the TUI sends along so the planner can use
+// conversation memory.
+type PriorTurn struct {
+	Prompt string `json:"prompt"`
+	Answer string `json:"answer"`
+}
+
 type submitReq struct {
-	Text string `json:"text"`
+	Text    string      `json:"text"`
+	History []PriorTurn `json:"history,omitempty"`
 }
 type submitResp struct {
 	RunID string `json:"run_id"`
 }
 
-func (c *Client) Submit(ctx context.Context, text string) (string, error) {
-	body, _ := json.Marshal(submitReq{Text: text})
+func (c *Client) Submit(ctx context.Context, text string, history []PriorTurn) (string, error) {
+	body, _ := json.Marshal(submitReq{Text: text, History: history})
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/intents", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	r, err := c.HTTP.Do(req)

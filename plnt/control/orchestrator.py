@@ -154,12 +154,18 @@ class Orchestrator:
         bb.emit("finished")
         return RunHandle(run_id, intent, bb, budget, acc, result=result)
 
-    def start_swarm(self, intent: str) -> RunHandle:
+    def start_swarm(self, intent: str, history: list | None = None) -> RunHandle:
         """LLM-driven planner emits N AgentSpecs; fan out under one Blackboard."""
         run_id = f"r-{uuid.uuid4().hex[:10]}"
-        return self.start_swarm_with_id(intent, run_id)
+        return self.start_swarm_with_id(intent, run_id, history=history)
 
-    def start_swarm_with_id(self, intent: str, run_id: str, blackboard: Blackboard | None = None) -> RunHandle:
+    def start_swarm_with_id(
+        self,
+        intent: str,
+        run_id: str,
+        blackboard: Blackboard | None = None,
+        history: list | None = None,
+    ) -> RunHandle:
         """Triage → (chat | one agent | DAG fan-out) → synthesize.
 
         - triage classifies the intent. "hi" returns kind=chat with a direct
@@ -171,6 +177,7 @@ class Orchestrator:
         from plnt.control.dag import DAGExecutor
         from plnt.control.planner_llm import llm_planner
         from plnt.control.synthesizer import synthesize
+        from plnt.control.triage import Turn as TriTurn
         from plnt.control.triage import triage
 
         bb = blackboard or Blackboard(run_id, root=self.runs_root)
@@ -178,24 +185,46 @@ class Orchestrator:
         budget = BudgetGovernor(run_id, self.run_budget, blackboard=bb)
         acc = ACCMonitor()
 
+        # Normalise history to TriTurn list (callers may pass dicts).
+        tri_history: list[TriTurn] = []
+        for t in history or []:
+            if isinstance(t, TriTurn):
+                tri_history.append(t)
+            elif isinstance(t, dict):
+                tri_history.append(TriTurn(prompt=t.get("prompt", ""), answer=t.get("answer", "")))
+
         bb.emit("triage_start")
-        tri = triage(intent)
-        bb.emit("triage", payload={"kind": tri.kind, "reason": tri.reason, "estimated_agents": tri.estimated_agents})
+        tri = triage(intent, history=tri_history)
+        bb.emit("triage", payload={
+            "kind": tri.kind,
+            "reason": tri.reason,
+            "estimated_agents": tri.estimated_agents,
+            "missing_info": tri.missing_info,
+        })
 
         # --- chat path: no swarm, just reply ----------------------------------
         if tri.kind == "chat":
-            answer = tri.reply or "(no reply)"
-            bb.emit("answer", payload={"text": answer, "source": "triage"})
+            bb.emit("answer", payload={"text": tri.reply or "(no reply)", "source": "triage"})
             bb.emit("finished", payload={"spawned": 0, "completed": 0, "killed": 0})
             handle = RunHandle(run_id, intent, bb, budget, acc)
             handle.plan_text = "chat: replied directly without spawning agents"
             handle.results = []
             return handle
 
+        # --- clarification path: ask the user before spawning ------------------
+        if tri.kind == "needs_clarification":
+            reply = tri.reply or "I need a bit more info before I can start. Could you share more detail?"
+            bb.emit("answer", payload={"text": reply, "source": "clarify", "missing_info": tri.missing_info})
+            bb.emit("finished", payload={"spawned": 0, "completed": 0, "killed": 0})
+            handle = RunHandle(run_id, intent, bb, budget, acc)
+            handle.plan_text = "clarify: asked the user for the missing info"
+            handle.results = []
+            return handle
+
         # --- complex path: full plan + DAG ------------------------------------
         if tri.kind == "complex_task":
             bb.emit("planner_start", payload={"intent": intent})
-            specs = llm_planner(intent, self.skills)
+            specs = llm_planner(intent, self.skills, history=tri_history)
         else:
             # simple_task: one direct agent, no planner LLM call
             from plnt.control.planner_llm import _default_spec
