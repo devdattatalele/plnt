@@ -65,7 +65,7 @@ type Model struct {
 	height  int
 	input   textinput.Model
 	log     viewport.Model
-	logBuf  strings.Builder
+	logBuf  string // plain string — Model is copied by value in Update, strings.Builder panics on copy
 	spinner spinner.Model
 	swarm   *SwarmState
 	health  client.Health
@@ -173,7 +173,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
-			if text != "" && m.stage == stageIdle || m.stage == stageDone {
+			canSubmit := m.stage == stageIdle || m.stage == stageDone
+			if text != "" && canSubmit {
 				m.input.SetValue("")
 				m.intent = text
 				m.stage = stageSubmitting
@@ -368,11 +369,19 @@ func (m *Model) layout() {
 }
 
 func (m *Model) appendLog(line string) {
-	if m.logBuf.Len() > 0 {
-		m.logBuf.WriteString("\n")
+	if m.logBuf != "" {
+		m.logBuf += "\n"
 	}
-	m.logBuf.WriteString(line)
-	m.log.SetContent(m.logBuf.String())
+	m.logBuf += line
+	// Cap the buffer at ~2000 lines so it doesn't grow unbounded for long
+	// sessions. We trim from the front.
+	if len(m.logBuf) > 200_000 {
+		// drop the oldest ~50KB
+		if i := strings.IndexByte(m.logBuf[50_000:], '\n'); i >= 0 {
+			m.logBuf = m.logBuf[50_000+i+1:]
+		}
+	}
+	m.log.SetContent(m.logBuf)
 	m.log.GotoBottom()
 }
 
