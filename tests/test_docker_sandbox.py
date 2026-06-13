@@ -49,7 +49,10 @@ def test_spec_accepts_docker_isolation():
 
 
 @image_required
-def test_docker_sandbox_end_to_end(isolated_home, tmp_path):
+def test_docker_sandbox_end_to_end(isolated_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("PLNT_REQUIRED_PATH", str(tmp_path / "nope"))
+    monkeypatch.delenv("PLNT_CLOUD_URL", raising=False)
+    monkeypatch.setenv("PLNT_LOCAL_URL", "http://127.0.0.1:1")
     (tmp_path / "src.txt").write_text("plnt twin\n")
     from plnt.execution.sandbox.docker import DockerSandbox
 

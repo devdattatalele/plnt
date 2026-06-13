@@ -70,11 +70,23 @@ class LLMRouter:
         transcript: list[dict] | None = None,
         tools: list[str] | None = None,
         model_hint: str = "auto",
+        raw: bool = False,
     ) -> Decision:
+        """Run one model turn.
+
+        raw=True: don't append the tool/FINAL prompt suffix and don't parse
+        the result as a tool call — return the model's text verbatim in
+        Decision.text. Used by the planner, which expects raw JSON.
+        """
         choice = choose(model_hint=model_hint, force=self.force)  # type: ignore[arg-type]
-        messages = self._build_messages(system, user, transcript or [], tools or [])
+        if raw:
+            messages = self._build_raw_messages(system, user)
+        else:
+            messages = self._build_messages(system, user, transcript or [], tools or [])
 
         if choice.kind == "offline":
+            if raw:
+                return Decision(kind="final", text="", backend="offline")
             d = self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
             d.backend = "offline"
             return d
@@ -83,17 +95,23 @@ class LLMRouter:
         try:
             text, tokens = self._call_openai_compat(choice, messages)
         except Exception:
-            # Configured backend died mid-call → degrade gracefully.
+            if raw:
+                return Decision(kind="final", text="", backend="offline")
             d = self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
             d.backend = "offline"
             return d
 
         latency_ms = int((time.monotonic() - started) * 1000)
+        if raw:
+            return Decision(kind="final", text=text, tokens=tokens, latency_ms=latency_ms, backend=choice.kind)
         decision = self._parse_decision(text, tools or [])
         decision.tokens = tokens
         decision.latency_ms = latency_ms
         decision.backend = choice.kind
         return decision
+
+    def _build_raw_messages(self, system: str, user: str) -> list[dict]:
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     # ------------------------------------------------------------- backends
 

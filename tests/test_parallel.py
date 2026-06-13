@@ -14,7 +14,11 @@ def test_default_cap_sensible():
     assert 1 <= n <= 8
 
 
-def test_fan_out_three(isolated_home, tmp_path):
+def test_fan_out_three(isolated_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("PLNT_REQUIRED_PATH", str(tmp_path / "nope"))
+    monkeypatch.delenv("PLNT_CLOUD_URL", raising=False)
+    monkeypatch.delenv("PLNT_CLOUD_API_KEY", raising=False)
+    monkeypatch.setenv("PLNT_LOCAL_URL", "http://127.0.0.1:1")
     (tmp_path / "src.txt").write_text("plnt twin alpha\n")
     bb = Blackboard("r-fan")
     budget = BudgetGovernor("r-fan", RunBudget(tokens=100_000, wall_seconds=120))

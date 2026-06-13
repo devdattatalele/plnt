@@ -11,8 +11,13 @@ from plnt.execution.sandbox.process import ProcessSandbox
 from plnt.execution.spec import AgentSpec, Budget
 
 
-def test_sandbox_round_trip(isolated_home, tmp_path):
-    # Seed a file the runner can search over.
+def test_sandbox_round_trip(isolated_home, tmp_path, monkeypatch):
+    # Force offline path — keep this test hermetic regardless of host Ollama.
+    monkeypatch.setenv("PLNT_REQUIRED_PATH", str(tmp_path / "nope"))
+    monkeypatch.delenv("PLNT_CLOUD_URL", raising=False)
+    monkeypatch.delenv("PLNT_CLOUD_API_KEY", raising=False)
+    monkeypatch.setenv("PLNT_LOCAL_URL", "http://127.0.0.1:1")
+
     (tmp_path / "src.txt").write_text("plnt is the personal local native twin\n")
     bb = Blackboard("r-st")
     sandbox = ProcessSandbox(bb)
@@ -24,7 +29,6 @@ def test_sandbox_round_trip(isolated_home, tmp_path):
     )
     result = sandbox.run(spec)
     assert result.exit_code == 0
-    # The runner must produce a result event.
     kinds = [e.get("kind") for e in result.events]
     assert "started" in kinds and "finished" in kinds
 

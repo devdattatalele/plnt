@@ -102,8 +102,10 @@ def get_run(run_id: str) -> dict:
 def submit_intent(req: SubmitIntent) -> SubmitResult:
     if not req.text.strip():
         raise HTTPException(400, "empty intent")
-    handle = _orchestrator.start_run(req.text)
-    # write a default outcome to ~/Desktop if it exists
+    # Surface now defaults to swarm mode — planner emits N AgentSpecs.
+    # Legacy single-spawn path is still available via /v1/intents?mode=single.
+    handle = _orchestrator.start_swarm(req.text)
+    # Optional markdown sink (off by default — TUI is the surface).
     desktop = Path.home() / "Desktop"
     if desktop.exists():
         _orchestrator.write_outcome(handle, desktop)

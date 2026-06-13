@@ -18,6 +18,7 @@ shape — the planner is just a function from (intent, registry) → AgentSpec.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from typing import Callable
 
 from plnt.control.acc import ACCMonitor
 from plnt.control.budget import BudgetExceeded, BudgetGovernor, RunBudget
+from plnt.control.parallel import ParallelOrchestrator
 from plnt.control.skills import SkillRegistry
 from plnt.execution.blackboard import Blackboard
 from plnt.execution.sandbox import get_sandbox
@@ -40,7 +42,15 @@ class RunHandle:
     blackboard: Blackboard
     budget: BudgetGovernor
     acc: ACCMonitor
+    # Single-spawn legacy field — populated by start_run.
     result: SandboxResult | None = None
+    # Swarm path — populated by start_swarm.
+    plan_text: str = ""
+    results: list[SandboxResult] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.results is None:
+            self.results = []
 
 
 PlannerFn = Callable[[str, SkillRegistry], AgentSpec]
@@ -144,11 +154,51 @@ class Orchestrator:
         bb.emit("finished")
         return RunHandle(run_id, intent, bb, budget, acc, result=result)
 
+    def start_swarm(self, intent: str) -> RunHandle:
+        """LLM-driven planner emits N AgentSpecs; fan out under one Blackboard."""
+        from plnt.control.planner_llm import llm_planner
+
+        run_id = f"r-{uuid.uuid4().hex[:10]}"
+        bb = Blackboard(run_id, root=self.runs_root)
+        bb.emit("intent", payload={"text": intent})
+        budget = BudgetGovernor(run_id, self.run_budget, blackboard=bb)
+        acc = ACCMonitor()
+
+        bb.emit("planner_start", payload={"intent": intent})
+        specs = llm_planner(intent, self.skills)
+        specs = [s.model_copy(update={"run_id": run_id}) for s in specs]
+        bb.emit("plan", payload={
+            "agent_count": len(specs),
+            "agents": [{"id": s.id, "role": s.role, "intent": s.inputs.get("intent", "")} for s in specs],
+        })
+
+        po = ParallelOrchestrator(bb, budget, acc)
+        out = po.fan_out(specs)
+
+        bb.emit("finished", payload={
+            "spawned": out.spawned,
+            "completed": out.completed,
+            "killed": out.killed,
+        })
+
+        handle = RunHandle(run_id, intent, bb, budget, acc)
+        handle.results = out.results
+        return handle
+
     def write_outcome(self, run: RunHandle, out_dir: Path) -> Path | None:
-        if not run.result or not run.result.output:
+        if os.environ.get("PLNT_WRITE_MD", "0") != "1":
+            return None
+        results = run.results or ([run.result] if run.result else [])
+        if not results:
             return None
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"plnt-{run.run_id}-{int(time.time())}.md"
-        body = run.result.output.get("answer") or str(run.result.output)
-        path.write_text(f"# Plnt run {run.run_id}\n\nIntent: {run.intent}\n\n{body}\n", encoding="utf-8")
+        lines = [f"# Plnt run {run.run_id}", "", f"Intent: {run.intent}", ""]
+        for r in results:
+            inner = (r.output or {}).get("output") or r.output or {}
+            ans = inner.get("answer") if isinstance(inner, dict) else str(inner)
+            lines.append(f"## {r.agent_id}")
+            lines.append(str(ans or "(no answer)"))
+            lines.append("")
+        path.write_text("\n".join(lines), encoding="utf-8")
         return path
