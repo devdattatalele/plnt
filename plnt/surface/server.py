@@ -100,16 +100,33 @@ def get_run(run_id: str) -> dict:
 
 @app.post("/v1/intents", response_model=SubmitResult)
 def submit_intent(req: SubmitIntent) -> SubmitResult:
+    """Spawn the swarm in a background thread and return the run_id immediately.
+
+    The TUI subscribes to /v1/runs/{id}/stream and watches the work happen.
+    If we ran start_swarm() synchronously here, the POST would block until
+    the whole swarm finished — defeating the live view.
+    """
     if not req.text.strip():
         raise HTTPException(400, "empty intent")
-    # Surface now defaults to swarm mode — planner emits N AgentSpecs.
-    # Legacy single-spawn path is still available via /v1/intents?mode=single.
-    handle = _orchestrator.start_swarm(req.text)
-    # Optional markdown sink (off by default — TUI is the surface).
-    desktop = Path.home() / "Desktop"
-    if desktop.exists():
-        _orchestrator.write_outcome(handle, desktop)
-    return SubmitResult(run_id=handle.run_id)
+
+    import threading
+    import uuid
+
+    run_id = f"r-{uuid.uuid4().hex[:10]}"
+    bb = Blackboard(run_id, root=_paths.runs)  # touches events.jsonl so SSE can subscribe
+
+    def _run_swarm():
+        try:
+            handle = _orchestrator.start_swarm_with_id(req.text, run_id, blackboard=bb)
+            desktop = Path.home() / "Desktop"
+            if desktop.exists():
+                _orchestrator.write_outcome(handle, desktop)
+        except Exception as e:
+            bb.emit("error", payload={"reason": f"swarm crashed: {e}"})
+            bb.emit("finished")
+
+    threading.Thread(target=_run_swarm, daemon=True, name=f"swarm-{run_id}").start()
+    return SubmitResult(run_id=run_id)
 
 
 @app.get("/v1/runs/{run_id}/stream")

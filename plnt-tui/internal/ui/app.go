@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,31 +14,70 @@ import (
 	"github.com/plnt/plnt-tui/internal/client"
 )
 
-// Messages
+// ---------------------------------------------------------------- messages
+
 type connectedMsg struct{ h client.Health }
 type connectErrMsg struct{ err error }
-type runStartedMsg struct{ id string }
+type runStartedMsg struct {
+	id     string
+	intent string
+}
 type submitErrMsg struct{ err error }
 type eventMsg client.Event
 type streamEndedMsg struct{}
+type tickMsg struct{}
 
-// Model is the root tea.Model.
-type Model struct {
-	cli      *client.Client
-	ctx      context.Context
-	cancel   context.CancelFunc
-	width    int
-	height   int
-	input    textinput.Model
-	log      viewport.Model
-	logBuf   strings.Builder
-	swarm    *SwarmState
-	health   client.Health
-	connOK   bool
-	connErr  error
-	lastErr  string
-	running  bool
+// ---------------------------------------------------------------- stages
+
+type stage int
+
+const (
+	stageIdle stage = iota
+	stageSubmitting
+	stagePlanning
+	stageRunning
+	stageDone
+)
+
+func (s stage) String() string {
+	switch s {
+	case stageIdle:
+		return "idle"
+	case stageSubmitting:
+		return "submitting"
+	case stagePlanning:
+		return "planner thinking"
+	case stageRunning:
+		return "agents running"
+	case stageDone:
+		return "done"
+	}
+	return "?"
 }
+
+// ---------------------------------------------------------------- model
+
+type Model struct {
+	cli     *client.Client
+	ctx     context.Context
+	cancel  context.CancelFunc
+	width   int
+	height  int
+	input   textinput.Model
+	log     viewport.Model
+	logBuf  strings.Builder
+	spinner spinner.Model
+	swarm   *SwarmState
+	health  client.Health
+	connOK  bool
+	connErr error
+	stage   stage
+	intent  string
+}
+
+var globalProgram *tea.Program
+
+func SetProgram(p *tea.Program) { globalProgram = p }
 
 func New(baseURL string) Model {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,21 +89,30 @@ func New(baseURL string) Model {
 
 	vp := viewport.New(80, 10)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+
 	return Model{
-		cli:    client.New(baseURL),
-		ctx:    ctx,
-		cancel: cancel,
-		input:  ti,
-		log:    vp,
+		cli:     client.New(baseURL),
+		ctx:     ctx,
+		cancel:  cancel,
+		input:   ti,
+		log:     vp,
+		spinner: sp,
+		stage:   stageIdle,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
+		m.spinner.Tick,
 		m.checkHealth(),
 	)
 }
+
+// ---------------------------------------------------------------- commands
 
 func (m Model) checkHealth() tea.Cmd {
 	return func() tea.Msg {
@@ -81,22 +130,18 @@ func (m Model) submit(text string) tea.Cmd {
 		if err != nil {
 			return submitErrMsg{err}
 		}
-		return runStartedMsg{id}
+		return runStartedMsg{id: id, intent: text}
 	}
 }
 
-func (m *Model) subscribe(runID string) tea.Cmd {
-	out := make(chan client.Event, 64)
-	go m.cli.Subscribe(m.ctx, runID, out)
+// startStream kicks off the SSE subscription. Returns immediately.
+// All subsequent events flow into the program via globalProgram.Send.
+func (m *Model) startStream(runID string) tea.Cmd {
 	return func() tea.Msg {
-		evt, ok := <-out
-		if !ok {
-			return streamEndedMsg{}
-		}
-		// re-enqueue subsequent events
+		ch := make(chan client.Event, 256)
+		go m.cli.Subscribe(m.ctx, runID, ch)
 		go func() {
-			for e := range out {
-				// fire-and-forget; the program's update will be called via Program.Send
+			for e := range ch {
 				if globalProgram != nil {
 					globalProgram.Send(eventMsg(e))
 				}
@@ -105,22 +150,22 @@ func (m *Model) subscribe(runID string) tea.Cmd {
 				globalProgram.Send(streamEndedMsg{})
 			}
 		}()
-		return eventMsg(evt)
+		return nil // no immediate message
 	}
 }
 
-var globalProgram *tea.Program
-
-func SetProgram(p *tea.Program) { globalProgram = p }
+// ---------------------------------------------------------------- update
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout()
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
@@ -128,45 +173,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
-			if text != "" && !m.running {
+			if text != "" && m.stage == stageIdle || m.stage == stageDone {
 				m.input.SetValue("")
-				m.running = true
+				m.intent = text
+				m.stage = stageSubmitting
+				m.swarm = nil
 				m.appendLog(Accent.Render("you  ") + text)
 				cmds = append(cmds, m.submit(text))
 			}
 		case "esc":
-			// reset input on Esc
 			m.input.SetValue("")
 		}
+
+	case spinner.TickMsg:
+		var c tea.Cmd
+		m.spinner, c = m.spinner.Update(msg)
+		cmds = append(cmds, c)
+
 	case connectedMsg:
 		m.connOK = true
 		m.health = msg.h
 		m.appendLog(OK.Render("✓ connected ") + Subtle.Render(fmt.Sprintf("v%s home=%s", msg.h.Version, msg.h.Home)))
+
 	case connectErrMsg:
 		m.connErr = msg.err
 		m.appendLog(Err.Render("✗ surface unreachable: ") + msg.err.Error())
+
 	case runStartedMsg:
-		m.swarm = NewSwarm(msg.id, m.lastIntent())
+		m.swarm = NewSwarm(msg.id, msg.intent)
+		m.stage = stagePlanning
 		m.appendLog(Accent.Render("⤳    ") + "run started " + Subtle.Render(msg.id))
-		cmds = append(cmds, m.subscribe(msg.id))
+		cmds = append(cmds, m.startStream(msg.id))
+
 	case submitErrMsg:
-		m.running = false
+		m.stage = stageIdle
 		m.appendLog(Err.Render("✗ submit failed: ") + msg.err.Error())
+
 	case eventMsg:
 		evt := client.Event(msg)
 		if m.swarm != nil {
 			m.swarm.Apply(evt)
 		}
 		m.appendEvent(evt)
-		if evt.Kind == "finished" && evt.AgentID == "" {
-			m.running = false
+		// Stage transitions driven by events:
+		switch evt.Kind {
+		case "plan":
+			m.stage = stageRunning
+		case "spawn", "started":
+			if m.stage == stagePlanning {
+				m.stage = stageRunning
+			}
+		case "finished":
+			if evt.AgentID == "" { // run-level finished
+				m.stage = stageDone
+			}
 		}
+
 	case streamEndedMsg:
-		m.running = false
+		if m.stage != stageDone {
+			m.stage = stageDone
+		}
 		m.appendLog(Subtle.Render("(stream ended)"))
 	}
 
-	// input + viewport child updates
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
@@ -174,26 +243,123 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) lastIntent() string {
-	// We cleared the input on submit, so the intent comes from the log.
-	// Cheap way: look for the most recent "you  " line.
-	lines := strings.Split(m.logBuf.String(), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		// drop ANSI color codes — naive but enough for retrieving the text
-		l := stripANSI(lines[i])
-		if strings.HasPrefix(l, "you  ") {
-			return strings.TrimSpace(strings.TrimPrefix(l, "you  "))
+// ---------------------------------------------------------------- view
+
+func (m Model) View() string {
+	if m.width == 0 {
+		return "starting…"
+	}
+	header := m.renderHeader()
+	swarm := m.renderSwarm()
+	log := Box.Width(m.width - 2).Render(m.log.View())
+	prompt := m.renderPrompt()
+	return lipgloss.JoinVertical(lipgloss.Left, header, swarm, log, prompt)
+}
+
+func (m Model) renderHeader() string {
+	state := "disconnected"
+	color := Err
+	if m.connOK {
+		state = "connected"
+		color = OK
+	}
+	plnt := Title.Render("plnt")
+	st := color.Render("● " + state)
+	url := Subtle.Render(m.cli.BaseURL)
+	help := Subtle.Render("⏎ submit · ⎋ clear · ^C quit")
+	return lipgloss.NewStyle().Padding(0, 1).Render(
+		fmt.Sprintf("%s  %s  %s   %s", plnt, st, url, help),
+	)
+}
+
+func (m Model) renderSwarm() string {
+	// Always render the panel — even when idle — so the user has somewhere
+	// to watch state appear.
+	header := ""
+	switch m.stage {
+	case stageIdle:
+		header = Subtle.Render("waiting for an intent. type one below and press ⏎.")
+	case stageSubmitting:
+		header = fmt.Sprintf("%s submitting intent…", m.spinner.View())
+	case stagePlanning:
+		header = fmt.Sprintf("%s planner thinking — deciding how many agents to spawn…", m.spinner.View())
+	case stageRunning:
+		if m.swarm != nil {
+			header = fmt.Sprintf("%s %d agent(s) running · %d killed", m.spinner.View(),
+				len(m.swarm.Agents), m.swarm.Killed)
+		} else {
+			header = fmt.Sprintf("%s running", m.spinner.View())
+		}
+	case stageDone:
+		header = OK.Render("✓ done")
+	}
+
+	rows := []string{header}
+
+	if m.intent != "" {
+		rows = append(rows, Subtle.Render("intent: ")+m.intent)
+	}
+	if m.swarm != nil {
+		rows = append(rows, Subtle.Render(fmt.Sprintf("run %s · %s", m.swarm.RunID, m.swarm.Plan)))
+		rows = append(rows, "")
+
+		agents := m.swarm.Sorted()
+		if len(agents) == 0 {
+			rows = append(rows, Subtle.Render("  (no agents spawned yet — waiting for plan event)"))
+		}
+		for _, a := range agents {
+			rows = append(rows, m.renderAgentRow(a))
 		}
 	}
-	return ""
+
+	body := strings.Join(rows, "\n")
+	style := Box.Width(m.width - 2)
+	if m.stage == stageRunning || m.stage == stagePlanning || m.stage == stageSubmitting {
+		style = BoxFocused.Width(m.width - 2)
+	}
+	return style.Render(body)
+}
+
+func (m Model) renderAgentRow(a *AgentView) string {
+	var st string
+	switch a.Status {
+	case "running":
+		st = AgentRunning.Render("● running")
+	case "done":
+		st = AgentDone.Render("✓ done   ")
+	case "killed":
+		st = AgentKilled.Render("☠ killed ")
+	case "error":
+		st = AgentKilled.Render("☠ error  ")
+	case "spawned":
+		st = Subtle.Render("◌ spawned")
+	default:
+		st = Subtle.Render(a.Status)
+	}
+	tail := ""
+	if a.LastTool != "" {
+		tail = Subtle.Render(fmt.Sprintf("· %s(%s)", a.LastTool, a.LastArgs))
+	}
+	return fmt.Sprintf("  %s  %-14s  %s  %2d tools  %5s  %s",
+		st, idShort(a.ID), Accent.Render(padRight(a.Role, 18)), a.ToolCalls, a.Elapsed(), tail)
+}
+
+func (m Model) renderPrompt() string {
+	prefix := "> "
+	if m.stage == stageSubmitting || m.stage == stagePlanning || m.stage == stageRunning {
+		prefix = m.spinner.View() + " "
+	}
+	return Box.Width(m.width - 2).Render(prefix + m.input.View())
 }
 
 func (m *Model) layout() {
 	if m.width < 40 || m.height < 10 {
 		return
 	}
-	m.input.Width = m.width - 6
-	logHeight := m.height - 8 - 12 // header + agents pane + input + spacing
+	m.input.Width = m.width - 8
+	// Reserve: header (1) + swarm panel (variable) + prompt (3). Give the log
+	// the rest.
+	logHeight := m.height - 18
 	if logHeight < 4 {
 		logHeight = 4
 	}
@@ -220,21 +386,25 @@ func (m *Model) appendEvent(e client.Event) {
 	case "started":
 		pre = OK.Render("start ")
 	case "tool_call":
-		pre = Subtle.Render("tool  ")
+		pre = Subtle.Render("tool→ ")
 	case "tool_result":
-		pre = Subtle.Render("← res ")
+		pre = Subtle.Render("←tool ")
 	case "model_call":
 		pre = Subtle.Render("model→")
 	case "model_result":
 		pre = Subtle.Render("←model")
 	case "result":
-		pre = OK.Render("✓ done")
+		pre = OK.Render("✓ res ")
 	case "error":
 		pre = Err.Render("✗ err ")
 	case "killed":
 		pre = Err.Render("☠ kill")
 	case "finished":
 		pre = OK.Render("end   ")
+	case "intent":
+		pre = Accent.Render("intent")
+	case "planner_start":
+		pre = Accent.Render("plan→ ")
 	default:
 		pre = Subtle.Render(fmt.Sprintf("%-6s", e.Kind))
 	}
@@ -275,9 +445,20 @@ func compactPayload(e client.Event) string {
 		}
 		return r
 	case "finished":
-		rc, _ := e.Payload["exit_code"].(float64)
-		w, _ := e.Payload["wall_seconds"].(float64)
-		return fmt.Sprintf("exit=%d wall=%.1fs", int(rc), w)
+		rc, ok := e.Payload["exit_code"].(float64)
+		if ok {
+			w, _ := e.Payload["wall_seconds"].(float64)
+			return fmt.Sprintf("exit=%d wall=%.1fs", int(rc), w)
+		}
+		// run-level finished has no exit_code
+		s, _ := e.Payload["spawned"].(float64)
+		return fmt.Sprintf("spawned=%d", int(s))
+	case "intent":
+		t, _ := e.Payload["text"].(string)
+		if len(t) > 70 {
+			t = t[:67] + "…"
+		}
+		return t
 	}
 	return ""
 }
@@ -289,77 +470,9 @@ func idShort(s string) string {
 	return s
 }
 
-func (m Model) View() string {
-	header := m.renderHeader()
-	swarm := m.renderSwarm()
-	log := Box.Width(m.width - 2).Render(m.log.View())
-	prompt := Box.Width(m.width - 2).Render(m.input.View())
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, swarm, log, prompt)
-}
-
-func (m Model) renderHeader() string {
-	state := "disconnected"
-	color := Err
-	if m.connOK {
-		state = "connected"
-		color = OK
+func padRight(s string, n int) string {
+	if len(s) >= n {
+		return s
 	}
-	plnt := Title.Render("plnt")
-	st := color.Render("● " + state)
-	url := Subtle.Render(m.cli.BaseURL)
-	help := Subtle.Render("⏎ submit · ⎋ clear · ^C quit")
-	return lipgloss.NewStyle().Padding(0, 1).Render(
-		fmt.Sprintf("%s  %s  %s   %s", plnt, st, url, help),
-	)
-}
-
-func (m Model) renderSwarm() string {
-	if m.swarm == nil {
-		return Box.Width(m.width - 2).Render(Subtle.Render("no run yet"))
-	}
-	header := fmt.Sprintf("run %s · agents %d · spawned %d · killed %d",
-		m.swarm.RunID, len(m.swarm.Agents), m.swarm.Spawned, m.swarm.Killed)
-	rows := []string{Subtle.Render(header)}
-	rows = append(rows, Subtle.Render(m.swarm.Plan))
-
-	for _, a := range m.swarm.Sorted() {
-		st := Subtle.Render(a.Status)
-		switch a.Status {
-		case "running":
-			st = AgentRunning.Render("● running")
-		case "done":
-			st = AgentDone.Render("✓ done   ")
-		case "killed", "error":
-			st = AgentKilled.Render("☠ " + a.Status + " ")
-		}
-		tail := ""
-		if a.LastTool != "" {
-			tail = Subtle.Render(fmt.Sprintf("· %s(%s)", a.LastTool, a.LastArgs))
-		}
-		rows = append(rows, fmt.Sprintf("  %s  %-22s  %s  %3d tools  %5s  %s",
-			st, idShort(a.ID), Accent.Render(a.Role), a.ToolCalls, a.Elapsed(), tail))
-	}
-	body := strings.Join(rows, "\n")
-	style := Box
-	if m.running {
-		style = BoxFocused
-	}
-	return style.Width(m.width - 2).Render(body)
-}
-
-// stripANSI removes ANSI escape sequences from a string.
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == 0x1b {
-			// skip until 'm'
-			for i < len(s) && s[i] != 'm' {
-				i++
-			}
-			continue
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
+	return s + strings.Repeat(" ", n-len(s))
 }

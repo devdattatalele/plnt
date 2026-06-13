@@ -55,6 +55,9 @@ class Blackboard:
         self._lock = threading.Lock()
         self.dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        # Touch the events file so SSE subscribers don't race-404 the path
+        # before the first emit lands.
+        self.events_path.touch(exist_ok=True)
 
     # ----- writer -----
 

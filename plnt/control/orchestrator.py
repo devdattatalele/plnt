@@ -156,10 +156,18 @@ class Orchestrator:
 
     def start_swarm(self, intent: str) -> RunHandle:
         """LLM-driven planner emits N AgentSpecs; fan out under one Blackboard."""
+        run_id = f"r-{uuid.uuid4().hex[:10]}"
+        return self.start_swarm_with_id(intent, run_id)
+
+    def start_swarm_with_id(self, intent: str, run_id: str, blackboard: Blackboard | None = None) -> RunHandle:
+        """Same as start_swarm but takes a pre-allocated run_id (and optionally a Blackboard).
+
+        The surface uses this so it can hand the run_id back to the TUI before
+        the swarm starts running, letting the TUI subscribe to SSE immediately.
+        """
         from plnt.control.planner_llm import llm_planner
 
-        run_id = f"r-{uuid.uuid4().hex[:10]}"
-        bb = Blackboard(run_id, root=self.runs_root)
+        bb = blackboard or Blackboard(run_id, root=self.runs_root)
         bb.emit("intent", payload={"text": intent})
         budget = BudgetGovernor(run_id, self.run_budget, blackboard=bb)
         acc = ACCMonitor()
