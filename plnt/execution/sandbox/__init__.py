@@ -1,9 +1,10 @@
 """Sandbox primitives — the ladder.
 
-rung 0: process    (this v0)
-rung 1: gvisor     (next)
-rung 2: microvm    (Firecracker)
-rung 3: wasm       (capability-first)
+rung 0   : process       (this v0, trusted-code default)
+rung 0.5 : docker        (operational isolation: cpu/mem caps, monitoring, cleanup)
+rung 1   : gvisor        (syscall isolation)
+rung 2   : microvm       (Firecracker; LLM-emitted code)
+rung 3   : wasm          (capability-first)
 
 Pick from a registry keyed by the AgentSpec.isolation field.
 """
@@ -17,6 +18,14 @@ _REGISTRY: dict[str, type[Sandbox]] = {
     "process": ProcessSandbox,
 }
 
+# Docker is optional — only available if the `docker` python package is installed.
+try:
+    from plnt.execution.sandbox.docker import DockerSandbox  # noqa: F401
+
+    _REGISTRY["docker"] = DockerSandbox
+except ImportError:
+    DockerSandbox = None  # type: ignore[assignment,misc]
+
 
 def get_sandbox(isolation: str) -> type[Sandbox]:
     try:
@@ -29,4 +38,8 @@ def get_sandbox(isolation: str) -> type[Sandbox]:
         ) from e
 
 
-__all__ = ["Sandbox", "SandboxResult", "ProcessSandbox", "get_sandbox"]
+def available_rungs() -> list[str]:
+    return sorted(_REGISTRY.keys())
+
+
+__all__ = ["Sandbox", "SandboxResult", "ProcessSandbox", "get_sandbox", "available_rungs"]

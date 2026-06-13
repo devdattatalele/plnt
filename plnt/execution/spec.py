@@ -19,7 +19,7 @@ from plnt.config import HARD_MAX_DEPTH, HARD_MAX_TOKENS_PER_SPAWN, HARD_MAX_WALL
 # Anything else is reachable *through* them — through the filesystem.
 ALLOWED_TOOLS: set[str] = {"search", "execute"}
 
-ISOLATION_RUNGS = ("process", "gvisor", "microvm", "wasm")
+ISOLATION_RUNGS = ("process", "docker", "gvisor", "microvm", "wasm")
 LIFETIMES = ("ephemeral", "resident")
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -47,7 +47,7 @@ class AgentSpec(BaseModel):
 
     # Capability
     lifetime: Literal["ephemeral", "resident"] = "ephemeral"
-    isolation: Literal["process", "gvisor", "microvm", "wasm"] = "process"
+    isolation: Literal["process", "docker", "gvisor", "microvm", "wasm"] = "process"
     tools: list[str] = Field(default_factory=lambda: ["search", "execute"])
 
     # Inputs / outputs

@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 import httpx
 
+from plnt.compute.backend_picker import BackendChoice, choose
 from plnt.config import DEFAULT_COMPUTE_URL, DEFAULT_DEEP_MODEL, DEFAULT_PLANNER_MODEL
 
 
@@ -31,10 +32,16 @@ class Decision:
     text: str = ""
     tokens: int = 0
     latency_ms: int = 0
+    backend: str = "unknown"  # "local" | "cloud" | "offline" — audit field
 
 
 class LLMRouter:
-    """OpenAI-compatible chat router. Backend-agnostic."""
+    """OpenAI-compatible chat router. Backend-agnostic.
+
+    The router does NOT pick the backend. It asks `backend_picker.choose()`
+    on every step and uses whatever it gets. That makes the SSD-mounted →
+    local-Ollama, SSD-missing → cloud-API behaviour automatic and per-call.
+    """
 
     def __init__(
         self,
@@ -43,12 +50,15 @@ class LLMRouter:
         small_model: str | None = None,
         deep_model: str | None = None,
         timeout: float = 60.0,
+        force: Literal["auto", "local", "cloud", "offline"] = "auto",
     ):
+        # Kept for back-compat; the picker is now the source of truth.
         self.small_url = small_url or os.environ.get("PLNT_SMALL_URL") or DEFAULT_COMPUTE_URL
         self.deep_url = deep_url or os.environ.get("PLNT_DEEP_URL") or self.small_url
         self.small_model = small_model or DEFAULT_PLANNER_MODEL
         self.deep_model = deep_model or DEFAULT_DEEP_MODEL
         self.timeout = timeout
+        self.force = force
 
     # ---------------------------------------------------------------- step
 
@@ -61,44 +71,46 @@ class LLMRouter:
         tools: list[str] | None = None,
         model_hint: str = "auto",
     ) -> Decision:
-        url, model = self._pick(model_hint)
+        choice = choose(model_hint=model_hint, force=self.force)  # type: ignore[arg-type]
         messages = self._build_messages(system, user, transcript or [], tools or [])
+
+        if choice.kind == "offline":
+            d = self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
+            d.backend = "offline"
+            return d
 
         started = time.monotonic()
         try:
-            text, tokens = self._call_openai_compat(url, model, messages)
+            text, tokens = self._call_openai_compat(choice, messages)
         except Exception:
-            # Backend unreachable → deterministic echo path. This keeps the
-            # runtime testable offline and during outages.
-            return self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
+            # Configured backend died mid-call → degrade gracefully.
+            d = self._echo_step(system=system, user=user, transcript=transcript or [], tools=tools or [])
+            d.backend = "offline"
+            return d
 
         latency_ms = int((time.monotonic() - started) * 1000)
         decision = self._parse_decision(text, tools or [])
         decision.tokens = tokens
         decision.latency_ms = latency_ms
+        decision.backend = choice.kind
         return decision
 
     # ------------------------------------------------------------- backends
 
-    def _pick(self, hint: str) -> tuple[str, str]:
-        if hint == "deep":
-            return self.deep_url, self.deep_model
-        if hint == "small":
-            return self.small_url, self.small_model
-        # auto: small for routing/planning, deep for long-tail reasoning.
-        return self.small_url, self.small_model
-
-    def _call_openai_compat(self, url: str, model: str, messages: list[dict]) -> tuple[str, int]:
-        endpoint = url.rstrip("/")
+    def _call_openai_compat(self, choice: BackendChoice, messages: list[dict]) -> tuple[str, int]:
+        endpoint = choice.url.rstrip("/")
         if not endpoint.endswith("/v1/chat/completions"):
-            # Ollama: native uses /api/chat; OpenAI shim is at /v1/chat/completions.
+            # Ollama native is /api/chat; OpenAI/Groq/Together expose /v1/chat/completions.
             if "/v1" not in endpoint:
                 endpoint = endpoint + "/v1/chat/completions"
             else:
                 endpoint = endpoint + "/chat/completions"
-        payload = {"model": model, "messages": messages, "stream": False}
+        payload = {"model": choice.model, "messages": messages, "stream": False}
+        headers = {"Content-Type": "application/json"}
+        if choice.api_key:
+            headers["Authorization"] = f"Bearer {choice.api_key}"
         with httpx.Client(timeout=self.timeout) as client:
-            r = client.post(endpoint, json=payload)
+            r = client.post(endpoint, json=payload, headers=headers)
             r.raise_for_status()
             data = r.json()
         text = data["choices"][0]["message"]["content"]
