@@ -110,9 +110,16 @@ def llm_planner(
         logger.info("planner returned non-JSON; falling back: %r", text[:200])
         return [_default_spec(intent, registry)]
 
+    # Cap the swarm tightly. On a small CPU model 3 parallel agents is
+    # already the practical ceiling — beyond that the model server queues
+    # and total wall-clock balloons. The cap is configurable for users on
+    # bigger hardware via PLNT_MAX_AGENTS.
+    import os as _os
+    max_agents = int(_os.environ.get("PLNT_MAX_AGENTS", "3"))
+
     specs: list[AgentSpec] = []
     seen_ids: set[str] = set()
-    for raw in plan["agents"][:5]:
+    for raw in plan["agents"][:max_agents]:
         if not isinstance(raw, dict):
             continue
         spec = _spec_from_plan(raw, intent, registry, seen_ids)
@@ -214,6 +221,10 @@ def _make_spec(
     depends_on: list[str],
 ) -> AgentSpec:
     prompt = sk.prompt if sk else _default_persona(role)
+    # Fail-fast budget: a 3B-class model on CPU does ~5-20s per turn. 4 steps
+    # × 20s × 1.5x slack = 120s. Don't let a hung agent eat 15 minutes.
+    fast_wall = int(os.environ.get("PLNT_AGENT_WALL_SECONDS", "120"))
+    fast_steps = int(os.environ.get("PLNT_AGENT_MAX_STEPS", "4"))
     return AgentSpec(
         id=agent_id,
         role=role,
@@ -226,13 +237,13 @@ def _make_spec(
             "intent": intent,
             "search_roots": roots,
             "skill_prompt": prompt,
-            "max_steps": 5,
+            "max_steps": fast_steps,
             "depends_on": depends_on,
         },
         model_hint=hint,  # type: ignore[arg-type]
         budget=Budget(
             tokens=sk.budget.get("tokens", 12_000) if sk else 12_000,
-            wall_seconds=sk.budget.get("wall_seconds", 180) if sk else 180,
+            wall_seconds=min(sk.budget.get("wall_seconds", fast_wall) if sk else fast_wall, fast_wall),
             joules=sk.budget.get("joules", 0) if sk else 0,
         ),
     )

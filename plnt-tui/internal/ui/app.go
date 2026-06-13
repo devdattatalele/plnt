@@ -272,6 +272,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.stage != stageDone {
 			m.stage = stageDone
 		}
+		// Mark any still-running agents as 'lost' so they stop spinning at 31m.
+		if m.swarm != nil {
+			for _, av := range m.swarm.Agents {
+				if av.Status == "running" || av.Status == "spawned" {
+					av.Status = "killed"
+					av.KillReason = "stream ended"
+					av.FinishedAt = time.Now()
+				}
+			}
+		}
 		if n := len(m.turns); n > 0 && m.turns[n-1].FinishedAt.IsZero() {
 			m.turns[n-1].FinishedAt = time.Now()
 		}
@@ -453,6 +463,16 @@ func (m Model) renderAgentRow(a *AgentView) string {
 			fc = fmt.Sprintf(" · %d file(s)", a.FileCount)
 		}
 		main += "\n     " + Subtle.Render("📁 "+wd+fc)
+	}
+	// Show last few created files so the user sees work landing in real time.
+	if len(a.Files) > 0 {
+		recent := a.Files
+		if len(recent) > 5 {
+			recent = recent[len(recent)-5:]
+		}
+		for _, f := range recent {
+			main += "\n        " + AgentDone.Render("+ "+f)
+		}
 	}
 	return main
 }

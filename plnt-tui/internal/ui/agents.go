@@ -137,6 +137,28 @@ func (s *SwarmState) Apply(e client.Event) {
 		if args, ok := e.Payload["args"].(map[string]interface{}); ok {
 			av.LastArgs = compactArgs(args)
 		}
+		if wd, ok := e.Payload["workdir"].(string); ok && av.Workdir == "" {
+			av.Workdir = wd
+		}
+	case "fs_change":
+		av := s.touch(e.AgentID)
+		if wd, ok := e.Payload["workdir"].(string); ok && wd != "" {
+			av.Workdir = wd
+		}
+		if total, ok := e.Payload["total"].(float64); ok {
+			av.FileCount = int(total)
+		}
+		if added, ok := e.Payload["added"].([]interface{}); ok {
+			for _, f := range added {
+				if s, ok := f.(string); ok {
+					av.Files = append(av.Files, s)
+				}
+			}
+			// Cap to last 10 to keep memory bounded.
+			if len(av.Files) > 10 {
+				av.Files = av.Files[len(av.Files)-10:]
+			}
+		}
 	case "killed":
 		av := s.touch(e.AgentID)
 		av.Status = "killed"

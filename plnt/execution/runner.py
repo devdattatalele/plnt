@@ -105,7 +105,9 @@ def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
         if decision.kind == "tool_call":
             tool = decision.tool_name
             args = decision.tool_args or {}
-            _emit("tool_call", step=step, tool=tool, args=args)
+            _emit("tool_call", step=step, tool=tool, args=args, workdir=str(workdir))
+            # Snapshot workdir state BEFORE the tool runs so we can diff after.
+            before_files = _scan_workdir(workdir)
             try:
                 if tool == "search" and "search" in spec.tools:
                     hits = search(
@@ -128,6 +130,14 @@ def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
             except Exception as e:
                 result = {"error": str(e)}
             _emit("tool_result", step=step, tool=tool, ok="error" not in result)
+            # Filesystem-change visibility: what got created or modified during
+            # this tool call? The TUI uses this to render "📁 + X new files" in
+            # real time so the user can see work happening.
+            after_files = _scan_workdir(workdir)
+            new_files = sorted(after_files - before_files)
+            if new_files:
+                _emit("fs_change", step=step, workdir=str(workdir),
+                      added=new_files[:20], total=len(after_files))
             transcript.append({"step": step, "tool": tool, "args": args, "result": result})
             continue
 
@@ -195,6 +205,14 @@ def _summarise_transcript(spec: "AgentSpec", transcript: list[dict], workdir: Pa
 def _truncate_args(a):
     s = repr(a)
     return s if len(s) <= 80 else s[:77] + "…"
+
+
+def _scan_workdir(workdir: Path) -> set[str]:
+    """Return relative paths of all files currently in the workdir."""
+    try:
+        return {str(p.relative_to(workdir)) for p in workdir.rglob("*") if p.is_file()}
+    except Exception:
+        return set()
 
 
 def _default_skill_prompt(role: str) -> str:

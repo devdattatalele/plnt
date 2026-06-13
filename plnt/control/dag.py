@@ -48,12 +48,17 @@ class DAGExecutor:
         blackboard: Blackboard,
         budget: BudgetGovernor,
         acc: ACCMonitor | None = None,
-        max_concurrency: int = 4,
+        max_concurrency: int | None = None,
     ):
+        import os
         self.bb = blackboard
         self.budget = budget
         self.acc = acc
-        self.max_concurrency = max_concurrency
+        # Tight cap for CPU-only small models: too many parallel agents make
+        # the model server queue and total wall-time balloons.
+        if max_concurrency is None:
+            max_concurrency = int(os.environ.get("PLNT_MAX_CONCURRENCY", "3"))
+        self.max_concurrency = max(1, max_concurrency)
 
     def run(self, specs: list[AgentSpec]) -> DAGResult:
         deps = self._collect_deps(specs)

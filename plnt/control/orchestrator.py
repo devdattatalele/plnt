@@ -211,14 +211,32 @@ class Orchestrator:
             handle.results = []
             return handle
 
-        # --- deterministic clarification: if the likely skill needs inputs
-        #     the user didn't provide, ask BEFORE running anything ------------
-        if tri.kind != "needs_clarification":
-            from plnt.control.clarify import clarification_for_manifest, first_match
+        # If the assistant's previous turn was a clarifying question, this
+        # current message is most likely the answer to it — DO NOT re-ask,
+        # DO NOT flip to chat. Treat it as a continuation of the prior task.
+        from plnt.control.clarify import (
+            assistant_was_clarifying,
+            clarification_for_manifest,
+            first_match,
+        )
 
-            manifest = first_match(intent, self.skills)
+        replying_to_clarify = assistant_was_clarifying(tri_history)
+        if replying_to_clarify and tri.kind in ("chat", "needs_clarification"):
+            # Force the planning path. The LLM triage misclassified.
+            bb.emit("triage", payload={
+                "kind": "complex_task",
+                "reason": "override: user is answering a prior clarifying question",
+                "missing_info": [],
+            })
+            tri.kind = "complex_task"  # type: ignore[misc]
+
+        # --- deterministic clarification: if the likely skill needs inputs
+        #     the user didn't provide, ask BEFORE running anything.
+        #     SKIPPED when we're already in an answer-to-question turn.
+        if tri.kind != "needs_clarification" and not replying_to_clarify:
+            manifest = first_match(intent, self.skills, history=tri_history)
             if manifest:
-                clar = clarification_for_manifest(manifest, intent)
+                clar = clarification_for_manifest(manifest, intent, history=tri_history)
                 if clar:
                     bb.emit("triage", payload={
                         "kind": "needs_clarification",
