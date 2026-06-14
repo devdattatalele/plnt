@@ -98,8 +98,20 @@ def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
         if decision.kind == "final":
             ans = decision.text.strip()
             if not ans:
-                # Model gave us nothing useful — synthesise from what we DID do.
                 ans = _summarise_transcript(spec, transcript, workdir, reason="model returned empty FINAL")
+                return {"answer": ans, "steps": step, "transcript": transcript}
+            # Re-prompt safety net: if the model emitted prose that LOOKS like
+            # an execute() call ("mkdir ...", "npm init ...", "Execute the
+            # command: ...") on the FIRST step, it almost certainly meant to
+            # call the tool. Push back once with a corrective reminder.
+            if step == 1 and _looks_like_unwrapped_shell(ans) and "execute" in spec.tools:
+                _emit("log", payload={"reason": "first-step retry: model emitted prose-shell"})
+                user_msg = (
+                    "REMINDER: respond with TOOL: execute([\"cmd\",\"arg\",...]) — "
+                    "a JSON array of strings. Do NOT prose the command. Now do "
+                    "what the user asked:\n\n" + (spec.inputs.get("intent") or "")
+                )
+                continue
             return {"answer": ans, "steps": step, "transcript": transcript}
 
         if decision.kind == "tool_call":
@@ -213,6 +225,24 @@ def _scan_workdir(workdir: Path) -> set[str]:
         return {str(p.relative_to(workdir)) for p in workdir.rglob("*") if p.is_file()}
     except Exception:
         return set()
+
+
+# Heuristic: detect prose that's secretly trying to be a shell command.
+_SHELL_CUE_RE = __import__("re").compile(
+    r"\b(mkdir|touch|cat|echo|cp|mv|rm|ls|npm|pnpm|yarn|git|curl|wget|python|node|"
+    r"vite|create-next-app|execute\s*\(|TOOL\s*:)\b",
+    __import__("re").IGNORECASE,
+)
+
+
+def _looks_like_unwrapped_shell(text: str) -> bool:
+    """Did the model emit shell-y prose instead of a TOOL: call?"""
+    if "TOOL:" in text or "FINAL:" in text:
+        return False
+    if not _SHELL_CUE_RE.search(text):
+        return False
+    # Short responses dominated by shell verbs are the strongest signal.
+    return len(text) < 400
 
 
 def _default_skill_prompt(role: str) -> str:

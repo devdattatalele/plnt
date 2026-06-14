@@ -1,0 +1,36 @@
+[meta]
+name = "git-bootstrapper"
+version = "0.2"
+description = "Initialises a git repo in a directory and makes the first commit"
+tags = ["git", "init", "bootstrap", "commit", "deploy"]
+
+[runtime]
+model_hint = "small"
+tools = ["execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 8_000
+wall_seconds = 120
+
+[[requires.inputs]]
+name = "project_dir"
+type = "directory"
+description = "Absolute path to the project to init git in"
+example = "/Users/me/portfolio-site"
+
+[[requires.optional]]
+name = "remote_url"
+type = "url"
+description = "Optional git remote to add (GitHub/GitLab URL)"
+default = ""
+
+[output]
+schema = "object"
+required = ["summary"]
+[output.properties.summary]
+type = "string"
+format = "markdown"
+
+[graph]
+can_spawn = []

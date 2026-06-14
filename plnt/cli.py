@@ -213,6 +213,47 @@ def skills_show(role: str) -> None:
     console.print(sk.prompt)
 
 
+@skills.command("install")
+@click.argument("source")
+@click.option("--dry-run", is_flag=True, help="List what would be imported without writing.")
+def skills_install(source: str, dry_run: bool) -> None:
+    """Install skills from a public library.
+
+    SOURCE can be a shorthand or a full git URL. Shorthands:
+      anthropic           Anthropic's official skills repo
+      addyosmani          addyosmani/agent-skills (24 engineering skills)
+      scientific          K-Dense-AI/scientific-agent-skills (140 skills)
+      antigravity         sickn33/antigravity-awesome-skills (1500+ skills)
+      claude-skills-collection
+      the-library
+
+    Or pass a full URL: https://github.com/owner/repo.git
+    """
+    from plnt.control.skill_installer import KNOWN_SOURCES, InstallError, install
+
+    if source == "list":
+        console.print("[bold]Known shorthands:[/bold]")
+        for k, v in KNOWN_SOURCES.items():
+            console.print(f"  {k:30} {Subtle.render(v) if hasattr(Subtle, 'render') else v}")
+        return
+
+    try:
+        result = install(source, dry_run=dry_run)
+    except InstallError as e:
+        console.print(f"[red]install failed:[/red] {e}")
+        sys.exit(1)
+
+    console.print(f"[green]✓[/green] imported {result['imported']} skills from {result['source']}")
+    if result['skipped']:
+        console.print(f"[yellow]skipped[/yellow] {result['skipped']} (already exist or malformed)")
+    if result['skills']:
+        for role in result['skills'][:20]:
+            console.print(f"  · {role}")
+        if len(result['skills']) > 20:
+            console.print(f"  · ... and {len(result['skills']) - 20} more")
+    console.print(f"[dim]installed to {result['target']}[/dim]")
+
+
 def main() -> None:
     cli()
 

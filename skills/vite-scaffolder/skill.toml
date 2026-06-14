@@ -1,0 +1,40 @@
+[meta]
+name = "vite-scaffolder"
+version = "0.2"
+description = "Scaffolds a Vite project (React/Vue/Svelte) and runs npm install"
+tags = ["vite", "scaffold", "frontend", "build", "npm"]
+
+[runtime]
+model_hint = "small"
+tools = ["search", "execute"]
+default_isolation = "process"
+
+[budget]
+tokens = 12_000
+wall_seconds = 240
+
+[[requires.inputs]]
+name = "project_dir"
+type = "directory"
+description = "Absolute path where the project should be created"
+example = "/Users/me/portfolio-site"
+
+[[requires.optional]]
+name = "template"
+type = "string"
+description = "Vite template (react, react-ts, vue, svelte, vanilla)"
+default = "react"
+
+[output]
+schema = "object"
+required = ["summary"]
+
+[output.properties.summary]
+type = "string"
+format = "markdown"
+
+[output.properties.project_dir]
+type = "path"
+
+[graph]
+can_spawn = []
