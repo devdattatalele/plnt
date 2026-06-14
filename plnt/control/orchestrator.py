@@ -269,6 +269,15 @@ class Orchestrator:
             from plnt.control.planner_llm import _default_spec
             specs = [_default_spec(intent, self.skills)]
 
+        # Inject any user-mentioned absolute paths into every agent's
+        # inputs so the LLM doesn't fall back to hallucinated paths like
+        # /users/me/project. We harvest paths from the current intent and
+        # the recent conversation, then push them through under both
+        # 'search_roots' (for read) and 'project_dir' (for write).
+        user_paths = _harvest_paths(intent, tri_history)
+        if user_paths:
+            specs = [_inject_paths(s, user_paths) for s in specs]
+
         specs = [s.model_copy(update={"run_id": run_id}) for s in specs]
         bb.emit("plan", payload={
             "agent_count": len(specs),
@@ -364,3 +373,55 @@ def _no_output_fallback(intent: str, tri, specs) -> str:
         "stronger model (qwen2.5:7b-instruct or llama3.1:8b)."
     )
     return " ".join(bits)
+
+
+# ---------------------------------------------------------------------------
+# Path harvesting + injection — make sure spawned agents use the path the
+# user actually mentioned, not the hallucinated /users/me/project.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Absolute POSIX paths and ~/ paths anywhere in a string.
+_PATH_RE = _re.compile(r"(~/[\w./_-]+|/[A-Za-z0-9][\w./_-]+)")
+
+
+def _harvest_paths(intent: str, history: list) -> list[str]:
+    """Pull every absolute path mentioned in the current intent + last 6 turns."""
+    blobs = [intent or ""]
+    for t in (history or [])[-6:]:
+        prompt = getattr(t, "prompt", "") if not isinstance(t, dict) else t.get("prompt", "")
+        if prompt:
+            blobs.append(prompt)
+    out: list[str] = []
+    seen: set[str] = set()
+    for blob in blobs:
+        for m in _PATH_RE.findall(blob):
+            p = m.strip(".,;:!?)")
+            if p and p not in seen:
+                out.append(p)
+                seen.add(p)
+    return out
+
+
+def _inject_paths(spec, user_paths: list[str]):
+    """Add user paths to spec.inputs.search_roots and ensure project_dir is set.
+
+    Also rewrite the sub-intent text to literally include the path so the
+    LLM cannot ignore it.
+    """
+    if not user_paths:
+        return spec
+    new_inputs = dict(spec.inputs)
+    roots = list(new_inputs.get("search_roots") or [])
+    for p in user_paths:
+        if p not in roots:
+            roots.append(p)
+    new_inputs["search_roots"] = roots
+    new_inputs.setdefault("project_dir", user_paths[0])
+    # Make the intent string explicit about the path so the model can't
+    # hallucinate /users/me/project.
+    cur_intent = new_inputs.get("intent", "")
+    if user_paths[0] not in cur_intent:
+        new_inputs["intent"] = f"{cur_intent}\n\nUse this exact absolute path: {user_paths[0]}"
+    return spec.model_copy(update={"inputs": new_inputs})

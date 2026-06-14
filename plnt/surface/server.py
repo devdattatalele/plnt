@@ -168,7 +168,12 @@ async def stream_run(run_id: str):
                 offset = f.tell()
             for evt in new:
                 yield {"data": json.dumps(evt, default=str), "event": evt.get("kind", "log")}
-                if evt.get("kind") == "finished":
+                # End the stream ONLY on the run-level finished event
+                # (the one without an agent_id). Per-agent finished events
+                # come first and would otherwise terminate the stream
+                # before the synth answer event arrives. THIS WAS THE BUG
+                # behind the "(no answer)" displays.
+                if evt.get("kind") == "finished" and not evt.get("agent_id"):
                     done = True
                     break
             await asyncio.sleep(0.2)

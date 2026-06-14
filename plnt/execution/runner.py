@@ -30,6 +30,11 @@ def _emit(kind: str, **payload) -> None:
     print(json.dumps(evt, default=str), flush=True)
 
 
+# Module-level shared state so the SIGTERM handler (installed in main()) can
+# see the live transcript that _run_skill is appending to.
+_RUNNER_STATE: dict[str, Any] = {"transcript": []}
+
+
 def _read_spec() -> AgentSpec:
     raw = sys.stdin.readline()
     if not raw:
@@ -71,6 +76,9 @@ def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
 
     max_steps = int(spec.inputs.get("max_steps", 6))
     transcript: list[dict[str, Any]] = []
+    # Publish the transcript to the module-level state so the SIGTERM handler
+    # in main() can summarise what we did before the kill.
+    _RUNNER_STATE["transcript"] = transcript
     workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
 
     router = LLMRouter()
@@ -262,9 +270,31 @@ def main() -> int:
         _emit("finished")
         return 2
 
+    # Install a SIGTERM handler so a watchdog-killed runner still emits a
+    # 'result' event summarising what it did before the kill. Otherwise the
+    # synth step downstream sees zero output from killed agents.
+    import signal
+    _RUNNER_STATE["spec"] = spec
+
+    def _on_sigterm(signum, frame):
+        workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
+        tx = _RUNNER_STATE.get("transcript", [])
+        ans = _summarise_transcript(spec, tx, workdir, reason=f"killed by signal {signum}")
+        _emit("result", output={"answer": ans, "transcript": tx, "killed": True})
+        _emit("finished")
+        sys.exit(143)
+
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        pass
+
     _emit("started", role=spec.role, depth=spec.depth)
     try:
         result = _run_skill(spec, _allowed_roots(spec))
+        # Track the transcript on the shared state so the SIGTERM handler can see it.
+        if isinstance(result, dict) and "transcript" in result:
+            _RUNNER_STATE["transcript"] = result["transcript"]
         # Last-resort guard: result must always have a non-empty `answer`.
         if not isinstance(result, dict) or not (result.get("answer") or "").strip():
             workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
@@ -274,6 +304,8 @@ def main() -> int:
             )
         _emit("result", output=result)
         return 0
+    except SystemExit:
+        raise
     except Exception as e:  # noqa: BLE001 — runner is the outermost catch
         workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
         ans = f"[{spec.role}] crashed: {e}"
