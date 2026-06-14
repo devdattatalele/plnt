@@ -225,9 +225,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runStartedMsg:
 		m.swarm = NewSwarm(msg.id, msg.intent)
 		m.stage = stageTriage
-		// Attach run_id to the last turn (the optimistic one we added on submit)
-		if n := len(m.turns); n > 0 {
-			m.turns[n-1].RunID = msg.id
+		// Attach run_id to the first un-IDed turn matching this intent.
+		// Routing by intent prevents id-mixups when the user submits two
+		// prompts in quick succession (the optimistic Turn for prompt #2
+		// gets pushed before prompt #1's submit completes).
+		for i := range m.turns {
+			if m.turns[i].RunID == "" && m.turns[i].Prompt == msg.intent {
+				m.turns[i].RunID = msg.id
+				break
+			}
 		}
 		m.refreshChat()
 		cmds = append(cmds, m.startStream(msg.id))
@@ -261,8 +267,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "finished":
 			if evt.AgentID == "" {
 				m.stage = stageDone
-				if n := len(m.turns); n > 0 {
-					m.turns[n-1].FinishedAt = time.Now()
+				if idx := m.findTurnIndex(evt.RunID); idx >= 0 {
+					m.turns[idx].FinishedAt = time.Now()
 				}
 			}
 		}
@@ -282,8 +288,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if n := len(m.turns); n > 0 && m.turns[n-1].FinishedAt.IsZero() {
-			m.turns[n-1].FinishedAt = time.Now()
+		// Mark all unfinished turns as done so they stop spinning forever.
+		for i := range m.turns {
+			if m.turns[i].FinishedAt.IsZero() {
+				m.turns[i].FinishedAt = time.Now()
+			}
 		}
 		m.refreshChat()
 	}
@@ -295,13 +304,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// applyEventToTurn populates the current (last) Turn from the event stream.
+// findTurnIndex returns the index of the Turn carrying runID, or -1.
+func (m *Model) findTurnIndex(runID string) int {
+	if runID == "" {
+		return -1
+	}
+	for i := range m.turns {
+		if m.turns[i].RunID == runID {
+			return i
+		}
+	}
+	return -1
+}
+
+// applyEventToTurn populates the Turn matching evt.RunID. Routing by
+// run_id (not by position) prevents events from one run leaking into
+// another when the user submits multiple prompts back-to-back.
 func (m *Model) applyEventToTurn(evt client.Event) {
-	n := len(m.turns)
-	if n == 0 {
+	idx := m.findTurnIndex(evt.RunID)
+	if idx < 0 {
 		return
 	}
-	t := &m.turns[n-1]
+	t := &m.turns[idx]
 	switch evt.Kind {
 	case "triage":
 		if k, ok := evt.Payload["kind"].(string); ok {
