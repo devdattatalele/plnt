@@ -3,7 +3,7 @@
 **Status:** Draft v1 · 2026-07-14
 **Owner:** Devdatta Talele
 **One-liner:** An OpenAI-compatible chat playground served at
-`api.plnt.work`, embedded into the plnt.work marketing site, so a visiting
+`playground.plnt.work`, embedded into the plnt.work marketing site, so a visiting
 hiring manager can talk to a model deployed on the plnt Kubernetes platform
 inside 10 seconds of landing on the page.
 
@@ -94,7 +94,7 @@ Measured on the deployed API + a single-page-app analytic on the site.
   ConfigMap + Ingress + HPA + imagePullSecrets. cert-manager annotations for
   TLS. SSE-safe nginx annotations.
 - **Deploy overlay** — `deploy/do-k8s/values-do.yaml` targeting
-  `api.plnt.work` on DOKS in sfo3.
+  `playground.plnt.work` on DOKS in sfo3.
 - **Runbook** — `deploy/RUNBOOK-do-k8s.md`, 11 steps, ~40 min.
 - **Tests** — 7 pytest cases covering list, non-stream, stream,
   unknown-model, readyz-with-and-without-models.
@@ -129,13 +129,13 @@ Measured on the deployed API + a single-page-app analytic on the site.
 ```
               Cloudflare DNS
                  │
-                 │  api.plnt.work                  playground.plnt.work
+                 │  playground.plnt.work            plnt.work (site host)
                  ▼                                          │
-        ┌────────────────┐                        (rewrite) ▼
+        ┌────────────────┐                                  ▼
         │  DOKS ingress  │                          plnt.work/playground
         │   LoadBalancer │                                  │
-        └───────┬────────┘                                  │
-                │                                           │  fetch()
+        └───────┬────────┘                                  │  fetch()
+                │                                           │
                 ▼                                           │
        ┌─────────────────┐                                  │
        │  playground-api │  ◄──── /v1/chat/completions ─────┘
@@ -169,7 +169,7 @@ Measured on the deployed API + a single-page-app analytic on the site.
 
 | Risk                                                       | Likelihood | Mitigation                                                                              |
 |------------------------------------------------------------|------------|-----------------------------------------------------------------------------------------|
-| Cloudflare orange-cloud buffers SSE                        | Med        | Grey cloud on `api.plnt.work`. Documented in runbook §6.                                |
+| Cloudflare orange-cloud buffers SSE                        | Med        | Grey cloud on `playground.plnt.work`. Documented in runbook §6.                                |
 | DOKS cluster costs creep past $30/mo                       | Low        | 1-node autoscaling pool max 3; HPA max 6 pods; smallest node size.                      |
 | Let's Encrypt HTTP-01 fails at first attempt               | Med        | Runbook §5 tells reader to start with `letsencrypt-staging`, then switch to prod.       |
 | Image pulled for wrong arch on Apple silicon               | High       | Runbook §1 hard-codes `--platform linux/amd64`; failure mode called out in §Common.     |
@@ -181,9 +181,9 @@ Measured on the deployed API + a single-page-app analytic on the site.
 
 1. **W0** — API + chart + runbook merged to `main` (done).
 2. **W0 +1d** — `docker buildx build --push`, cluster up, first `helm install`,
-   `api.plnt.work` live with mock models. Cloudflare A record added.
+   `playground.plnt.work` live with mock models. Cloudflare A record added.
 3. **W0 +2d** — site agent flips `PUBLIC_PLNT_ENDPOINT` to
-   `https://api.plnt.work`, redeploys site. End-to-end demo works from
+   `https://playground.plnt.work`, redeploys site. End-to-end demo works from
    `plnt.work` landing → `/playground` → chat.
 4. **W0 +7d** — write the `vllm-runtime` chart (HANDOFF Phase 1).
 5. **W0 +14d** — first real (CPU-stub or single-GPU) model registered in

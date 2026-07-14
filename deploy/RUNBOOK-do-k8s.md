@@ -1,13 +1,17 @@
-# Runbook — ship `api.plnt.work` on DigitalOcean Kubernetes
+# Runbook — ship `playground.plnt.work` on DigitalOcean Kubernetes
 
-Prod deploy of the plnt playground API. Target URL: `https://api.plnt.work`.
+Prod deploy of the plnt playground API. Target URL: `https://playground.plnt.work`.
 The site's `/playground` page (at plnt.work) calls into this.
 
 **Naming reminder:**
-- `plnt.work` — static site (Astro).
-- `plnt.work/playground` — the chat UI island.
-- `playground.plnt.work` — Cloudflare rewrite → `plnt.work/playground`.
-- `api.plnt.work` — this API. What we're shipping in this runbook.
+- `plnt.work` — static marketing site (Astro). Owns `/playground` UI page.
+- `plnt.work/playground` — the chat UI island. Hits the API below.
+- `playground.plnt.work` — **this API**. What we're shipping in this runbook.
+
+The UI and the API are on different origins on purpose — the UI is a static
+build hosted anywhere (Vercel, Netlify, Cloudflare Pages), the API is a
+pod behind an ingress on the K8s cluster. CORS on the API allows the site's
+origin (see `deploy/do-k8s/values-do.yaml`).
 
 Total wall-clock: ~40 min if everything works first try, ~90 min with fumbles.
 Monthly cost: **~$24** (1× s-1vcpu-2gb node $12 + 1× LB $12; DOCR free tier).
@@ -147,11 +151,11 @@ and re-apply.
 
 ## 6. DNS — Cloudflare record
 
-Point `api.plnt.work` at the LB. In Cloudflare dashboard:
+Point `playground.plnt.work` at the LB. In Cloudflare dashboard:
 
 - Zone: `plnt.work` → **DNS** → **Add record**
 - Type: `A`
-- Name: `api`
+- Name: `playground`
 - IPv4 address: `$LB_IP` (from step 4)
 - Proxy status: **DNS only** (grey cloud — Cloudflare's orange-cloud proxy
   strips HTTP/1.1 upgrade for SSE in some tiers; keep it grey until you've
@@ -160,18 +164,12 @@ Point `api.plnt.work` at the LB. In Cloudflare dashboard:
 
 Verify:
 ```bash
-dig +short api.plnt.work                 # should return $LB_IP within a minute
+dig +short playground.plnt.work                 # should return $LB_IP within a minute
 ```
 
-While you're there — the site's rewrite:
-- Type: `CNAME`
-- Name: `playground`
-- Target: `plnt.work` (or wherever the site is hosted)
-- Proxied: **Orange cloud** ON
-- Then in Cloudflare → **Rules → Redirect Rules** (or Bulk Redirects), add:
-  `playground.plnt.work/*` → `https://plnt.work/playground` (301 or 302)
-
-That last one is the site agent's job — flag it to them if not done.
+The site owns the `plnt.work` apex + `www.plnt.work` records. Whatever host
+it's on (Vercel / Netlify / Cloudflare Pages), those get their own DNS entries
+— the site agent handles them.
 
 ---
 
@@ -190,7 +188,7 @@ kubectl -n plnt get pods,svc,ingress
 
 cert-manager will take 30-90s to provision the cert. Watch it:
 ```bash
-kubectl -n plnt describe certificate api-plnt-work-tls
+kubectl -n plnt describe certificate playground-plnt-work-tls
 kubectl -n plnt get certificate                          # READY should go True
 ```
 
@@ -200,16 +198,16 @@ kubectl -n plnt get certificate                          # READY should go True
 
 ```bash
 # TLS handshake + model list
-curl -s https://api.plnt.work/v1/models | jq
+curl -s https://playground.plnt.work/v1/models | jq
 
 # non-streaming
-curl -s https://api.plnt.work/v1/chat/completions \
+curl -s https://playground.plnt.work/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"plnt-mock-7b","messages":[{"role":"user","content":"hello prod"}]}' \
   | jq
 
 # streaming
-curl -sN https://api.plnt.work/v1/chat/completions \
+curl -sN https://playground.plnt.work/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"plnt-mock-7b","messages":[{"role":"user","content":"stream me"}],"stream":true}' \
   | head -20
@@ -222,7 +220,7 @@ the third, chunk-by-chunk (not batched — proves SSE is passing through).
 
 ## 9. Point the site's chat panel at the API
 
-In the plnt-site repo, set `PUBLIC_PLNT_ENDPOINT=https://api.plnt.work`
+In the plnt-site repo, set `PUBLIC_PLNT_ENDPOINT=https://playground.plnt.work`
 in the deployment env (Vercel/Netlify/wherever the site is hosted) and
 redeploy. The playground island already falls back to a stub if the env
 var isn't set — that's why the site is usable without this API being up.
@@ -267,6 +265,6 @@ doctl registry delete plnt                           # frees registry (already f
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------|
 | `exec format error` in pod logs                           | Image built for arm64 on Apple silicon — rebuild with `--platform linux/amd64`.         |
 | `ImagePullBackOff` for `registry.digitalocean.com/...`    | `docr-plnt` secret missing in `plnt` namespace. Re-run step 3.                          |
-| `certificate` stuck `Ready: False`                        | DNS not resolving yet — Let's Encrypt HTTP-01 needs `api.plnt.work` to reach the LB.    |
+| `certificate` stuck `Ready: False`                        | DNS not resolving yet — Let's Encrypt HTTP-01 needs `playground.plnt.work` to reach the LB.    |
 | SSE responses arrive all at once                          | Cloudflare orange-cloud proxy buffering. Flip to grey, or upgrade to a tier that streams. |
 | `helm install` complains about the `imagePullSecrets` key | Old chart — `git pull` / rebuild. New template expects `.Values.imagePullSecrets`.      |

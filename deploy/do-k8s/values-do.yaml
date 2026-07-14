@@ -42,7 +42,7 @@ service:
 ingress:
   enabled: true
   className: nginx
-  host: api.plnt.work
+  host: playground.plnt.work
   path: /
   pathType: Prefix
   annotations:
@@ -55,7 +55,7 @@ ingress:
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
   tls:
     enabled: true
-    secretName: api-plnt-work-tls
+    secretName: playground-plnt-work-tls
 
 resources:
   requests:

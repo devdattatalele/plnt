@@ -15,6 +15,7 @@ from plnt import __version__
 from plnt.config import DEFAULT_SURFACE_HOST, DEFAULT_SURFACE_PORT, paths
 from plnt.control.orchestrator import Orchestrator
 from plnt.execution.blackboard import Blackboard
+from plnt.playground.cli import playground_group as _playground_group
 
 console = Console()
 _paths = paths()
@@ -27,7 +28,98 @@ def _base_url() -> str:
 @click.group()
 @click.version_option(__version__, prog_name="plnt")
 def cli() -> None:
-    """Plnt — Personal Local Native Twin."""
+    """plnt — multi-model inference playground on Kubernetes.
+
+    Subcommands split by plane:
+
+    \b
+      plnt playground …   the OpenAI-compat inference gateway (this repo's live surface)
+      plnt deploy …       apply an InferenceModel manifest (kubectl wrapper)
+      plnt up             start the personal-runtime surface server (origin story)
+      plnt intent …       (personal runtime) send an intent to the resident planner
+    """
+
+
+# --------------------------------------------------------------- playground group
+
+cli.add_command(_playground_group)
+
+
+# --------------------------------------------------------------- deploy command
+
+
+@cli.command()
+@click.argument("name")
+@click.option(
+    "--runtime",
+    type=click.Choice(["vllm", "tgi", "sglang", "trt-llm"]),
+    default="vllm",
+    show_default=True,
+)
+@click.option(
+    "--model",
+    "model_ref",
+    required=True,
+    help="HF-style model ref, e.g. meta-llama/Llama-3-8B-Instruct.",
+)
+@click.option("--gpu", default=1, type=int, show_default=True)
+@click.option("--replicas", default=1, type=int, show_default=True)
+@click.option(
+    "--apply/--print",
+    "do_apply",
+    default=False,
+    help="Run `kubectl apply -f -` after rendering. Without --apply, print YAML to stdout.",
+)
+def deploy(
+    name: str,
+    runtime: str,
+    model_ref: str,
+    gpu: int,
+    replicas: int,
+    do_apply: bool,
+) -> None:
+    """Render (and optionally apply) an InferenceModel resource.
+
+    Note: the InferenceModel CRD + operator land in HANDOFF Phase 3. Until
+    then this command produces the manifest that Phase 3 will consume, so
+    you can inspect what a `plnt deploy` will look like end-to-end.
+    """
+    import shutil
+    import subprocess
+
+    manifest = f"""apiVersion: plnt.work/v1
+kind: InferenceModel
+metadata:
+  name: {name}
+  labels:
+    app.kubernetes.io/part-of: plnt
+spec:
+  runtime: {runtime}
+  model: {model_ref}
+  resources:
+    gpu: {gpu}
+  replicas:
+    min: {replicas}
+    max: {max(replicas, replicas * 3)}
+"""
+    if not do_apply:
+        click.echo(manifest, nl=False)
+        return
+
+    if shutil.which("kubectl") is None:
+        console.print("[red]kubectl not found on PATH[/red]")
+        sys.exit(1)
+
+    console.print(
+        "[yellow]note:[/yellow] applying InferenceModel manifest — cluster must "
+        "have the CRD installed (Phase 3, not shipped yet)."
+    )
+    proc = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=manifest.encode(),
+        check=False,
+    )
+    sys.exit(proc.returncode)
 
 
 # ---------------------------------------------------------------------- server

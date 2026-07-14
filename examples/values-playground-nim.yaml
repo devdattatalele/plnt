@@ -1,0 +1,78 @@
+# Helm values for the playground API, proxying to NVIDIA NIM hosted APIs.
+# Sensitive values (NIM_API_KEY) come from a Kubernetes Secret named
+# `plnt-nim-secret` — never inline the key in this file.
+#
+# Create the secret first:
+#   kubectl create secret generic plnt-nim-secret \
+#     --from-literal=NIM_API_KEY=nvapi-...
+#
+# Install / upgrade:
+#   helm upgrade --install plnt-playground plnt/charts/playground-api \
+#     -f examples/values-playground-nim.yaml
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/devdattatalele/plnt-playground-api
+  tag: latest
+
+# Model registry — proxies to NVIDIA NIM hosted API.
+# The frontend catalog (plnt-site/src/islands/playground/models.ts) uses the
+# same `id` values so the two agree on model names.
+env:
+  PLNT_PLAYGROUND_MODELS: |
+    [
+      {
+        "id": "llama-3.1-70b-instruct",
+        "backend": "http",
+        "runtime": "nim-hosted",
+        "upstream_url": "https://integrate.api.nvidia.com",
+        "upstream_model": "meta/llama-3.1-70b-instruct",
+        "api_key_env": "NIM_API_KEY"
+      },
+      {
+        "id": "nemotron-70b-instruct",
+        "backend": "http",
+        "runtime": "nim-hosted",
+        "upstream_url": "https://integrate.api.nvidia.com",
+        "upstream_model": "nvidia/llama-3.1-nemotron-70b-instruct",
+        "api_key_env": "NIM_API_KEY"
+      },
+      {
+        "id": "mixtral-8x22b-instruct",
+        "backend": "http",
+        "runtime": "nim-hosted",
+        "upstream_url": "https://integrate.api.nvidia.com",
+        "upstream_model": "mistralai/mixtral-8x22b-instruct-v0.1",
+        "api_key_env": "NIM_API_KEY"
+      },
+      {
+        "id": "deepseek-r1",
+        "backend": "http",
+        "runtime": "nim-hosted",
+        "upstream_url": "https://integrate.api.nvidia.com",
+        "upstream_model": "deepseek-ai/deepseek-r1",
+        "api_key_env": "NIM_API_KEY"
+      }
+    ]
+
+# Load NIM_API_KEY from the Secret above.
+envFrom:
+  - secretRef:
+      name: plnt-nim-secret
+
+ingress:
+  enabled: true
+  className: nginx
+  host: playground.plnt.work
+  tls:
+    enabled: true
+    secretName: plnt-playground-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://play.plnt.work, https://plnt.work"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "content-type, authorization, accept"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"

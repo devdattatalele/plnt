@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
@@ -32,6 +33,33 @@ from plnt.playground.schemas import (
 log = logging.getLogger("plnt.playground")
 
 
+# Default allow-list for browser CORS. Covers:
+#   - production site + playground subdomain rewrite
+#   - Astro dev server (plnt-site) at localhost:4321
+#   - common local ports for adjacent dev servers
+# Override at deploy time with PLNT_PLAYGROUND_CORS_ORIGINS (comma-separated
+# list of origins, or the literal "*" to open the door).
+DEFAULT_CORS_ORIGINS = [
+    "https://plnt.work",
+    "https://playground.plnt.work",
+    "http://localhost:4321",
+    "http://127.0.0.1:4321",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("PLNT_PLAYGROUND_CORS_ORIGINS")
+    if not raw:
+        return DEFAULT_CORS_ORIGINS
+    if raw.strip() == "*":
+        return ["*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 def create_app(registry: Registry | None = None) -> FastAPI:
     app = FastAPI(
         title="plnt playground",
@@ -42,12 +70,9 @@ def create_app(registry: Registry | None = None) -> FastAPI:
         version="0.1.0",
     )
 
-    # Allow the plnt.work site (and local dev) to call this from a browser.
-    # CORS is deliberately permissive — this API is read-only from the browser's
-    # perspective and there's no auth cookie surface to protect.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins(),
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
