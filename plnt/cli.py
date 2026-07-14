@@ -213,6 +213,66 @@ def skills_show(role: str) -> None:
     console.print(sk.prompt)
 
 
+# ----------------------------------------------------------------------- auth
+
+
+@cli.group()
+def auth() -> None:
+    """Web UI authentication — username/password store."""
+
+
+@auth.command("set-password")
+@click.option("--user", "username", default="admin", help="Username to set.")
+@click.password_option("--password", prompt=True, confirmation_prompt=True)
+def auth_set_password(username: str, password: str) -> None:
+    from plnt.surface.auth import AuthStore
+
+    _paths.ensure()
+    store = AuthStore()
+    store.set_password(username, password)
+    console.print(f"[green]✓[/green] password set for {username!r} at {store.path}")
+
+
+@auth.command("list-users")
+def auth_list_users() -> None:
+    from plnt.surface.auth import AuthStore
+
+    store = AuthStore()
+    users = store.list_users()
+    if not users:
+        console.print(f"[dim]no users in {store.path}[/dim]")
+        return
+    for u in users:
+        console.print(u)
+
+
+# ----------------------------------------------------------------------- vendor
+
+
+@cli.command("vendor-chat")
+@click.option(
+    "--source", default=None,
+    help="Path to plnt-site/dist/app/. Defaults to ../plnt-site/dist/app relative to this repo.",
+)
+def vendor_chat(source: str | None) -> None:
+    """Copy a built chat bundle into plnt/surface/static/app/."""
+    import shutil
+
+    repo_root = Path(__file__).resolve().parent.parent
+    src = Path(source).expanduser() if source else (repo_root.parent / "plnt-site" / "dist-app")
+    src = src.resolve()
+    if not src.exists():
+        console.print(f"[red]source not found:[/red] {src}")
+        console.print(f"[dim]hint: cd {src.parent.parent} && npm run build:app[/dim]")
+        sys.exit(1)
+    dst = repo_root / "plnt" / "surface" / "static" / "app"
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst)
+    console.print(f"[green]✓[/green] vendored {src} → {dst}")
+
+
 @skills.command("install")
 @click.argument("source")
 @click.option("--dry-run", is_flag=True, help="List what would be imported without writing.")

@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import uuid
+from pathlib import Path  # noqa: F401 (used in string annotations)
 
 from plnt.compute.router import LLMRouter
 from plnt.control.skills import Skill, SkillRegistry
@@ -32,24 +33,36 @@ PLANNER_SYSTEM = """\
 You are the Planner inside Plnt, a local multi-agent runtime.
 
 You decompose ONE complex user intent into a small graph of micro-agents.
-Each agent is short-lived, sandboxed, and has TWO tools:
+Every agent in this plan operates in the SAME shared WORKDIR (a single
+project directory). Sibling agents see each other's files via the
+filesystem — that's how a "scaffolder" can hand a project off to an
+"add-navbar" agent.
+
+Each agent has TWO tools:
 
   search(pattern, root)   — grep/find under allowed paths.
-  execute(argv)           — run a shell command. THIS IS POWERFUL:
-                             - mkdir, ls, cat, cp, mv, rm files
-                             - git init, git clone, git commit
-                             - npm/pnpm/yarn install, npm create vite
-                             - curl/wget to download templates
-                             - python -m / node scripts you write first
-                             - any other CLI tool installed on the host
+  execute(argv)           — run a shell command in the WORKDIR. argv is a
+                            JSON array of strings, e.g.
+                              ["npm","create","vite@latest",".","--","--template","react"]
+                            Powerful: mkdir, cat, cp, mv, rm, git, npm,
+                            pnpm, yarn, pip, uv, curl, wget, python, node,
+                            and anything else on the host PATH.
 
-That means an agent CAN build a portfolio site, scaffold a project,
-deploy to vercel, etc. — by calling execute on the right argv. Plan
-agents accordingly.
+CRITICAL PATH RULE:
+- Do NOT include absolute paths like /Users/... or /home/... in execute()
+  argv. Your cwd is ALREADY the workdir. Use "." or relative paths.
+- For scaffolders, prefer "npm create vite@latest . --yes" (the dot means
+  "scaffold here"). Never pass an absolute target path.
+
+CRITICAL SEQUENCING RULE:
+- If a step PRODUCES the project (scaffolder, init, bootstrap, create-app)
+  and other steps EDIT it (add-navbar, add-route, write-page), the editors
+  MUST list the producer in depends_on. Parallel race-conditions on an
+  empty dir produce empty output.
 
 Use the conversation context if it's provided — the user may have
-answered an earlier clarifying question, and that information should
-guide your plan.
+answered an earlier clarifying question or the previous turn may have
+created files in this WORKDIR. Build on what's already there.
 
 Respond with ONE JSON object only — no prose, no code fences:
 
@@ -60,7 +73,6 @@ Respond with ONE JSON object only — no prose, no code fences:
       "id": "<short kebab-case id, must be unique within this plan>",
       "role": "<descriptive role name; specific to this task>",
       "intent": "<focused sub-task outcome, written as a goal>",
-      "search_roots": ["<absolute path>", ...],
       "model_hint": "small" | "deep",
       "depends_on": ["<id of upstream agent>", ...]
     }
@@ -68,17 +80,13 @@ Respond with ONE JSON object only — no prose, no code fences:
 }
 
 RULES:
-- 1–6 agents. Use parallel branches when independent, depends_on chains
-  when output of one feeds the next.
-- Role names should be task-specific: "resume-reader",
-  "template-scout", "vite-scaffolder", "git-bootstrapper",
-  "deploy-helper", "review-critic".
-- search_roots default to $HOME if not given.
+- 1–6 agents. Independent branches in parallel; depends_on chains when
+  output of one feeds the next.
+- Role names task-specific: "vite-scaffolder", "navbar-writer",
+  "homepage-writer", "deploy-helper", "review-critic".
 - For construction tasks (build / scaffold / deploy / set up X), most
-  agents will rely on execute(), not search().
-- The final agent in a chain typically reviews or summarises.
-- Don't invent tools beyond search and execute — but be creative about
-  what you do with execute.
+  agents rely on execute(), not search().
+- Don't invent tools beyond search and execute.
 """
 
 
@@ -87,10 +95,11 @@ def llm_planner(
     registry: SkillRegistry,
     router: LLMRouter | None = None,
     history: list | None = None,
+    project_dir: "Path | str | None" = None,
 ) -> list[AgentSpec]:
     """Return a list of AgentSpecs. Always non-empty."""
     router = router or LLMRouter()
-    user_msg = _build_user_msg(intent, registry, history or [])
+    user_msg = _build_user_msg(intent, registry, history or [], project_dir)
 
     try:
         decision = router.step(
@@ -133,7 +142,12 @@ def llm_planner(
     return specs
 
 
-def _build_user_msg(intent: str, registry: SkillRegistry, history: list | None) -> str:
+def _build_user_msg(
+    intent: str,
+    registry: SkillRegistry,
+    history: list | None,
+    project_dir: "Path | str | None" = None,
+) -> str:
     lines: list[str] = []
     if history:
         lines.append("Recent conversation (oldest first):")
@@ -154,8 +168,24 @@ def _build_user_msg(intent: str, registry: SkillRegistry, history: list | None) 
             lines.append(f"- {r}: {head[:100]}")
     lines.append("")
     lines.append(f"Latest user intent: {intent}")
+    if project_dir is not None:
+        lines.append(f"WORKDIR (every agent's cwd): {project_dir}")
+        # Show what's already in the workdir so the planner can build on it
+        # instead of re-scaffolding. This is the session-continuity hook.
+        try:
+            from pathlib import Path as _P
+            wd = _P(str(project_dir))
+            if wd.exists():
+                existing = sorted(
+                    p.name for p in wd.iterdir() if not p.name.startswith(".")
+                )[:20]
+                if existing:
+                    lines.append(f"WORKDIR contents: {', '.join(existing)}")
+                else:
+                    lines.append("WORKDIR contents: (empty)")
+        except OSError:
+            pass
     lines.append(f"HOME: {os.path.expanduser('~')}")
-    lines.append(f"CWD:  {os.getcwd()}")
     return "\n".join(lines)
 
 
@@ -269,13 +299,18 @@ def _default_persona(role: str) -> str:
     )
 
 
-def _default_spec(intent: str, registry: SkillRegistry) -> AgentSpec:
+def _default_spec(
+    intent: str,
+    registry: SkillRegistry,
+    project_dir: "Path | str | None" = None,
+) -> AgentSpec:
     sk = registry.get("general-helper")
+    roots = [str(project_dir)] if project_dir is not None else [os.getcwd()]
     return _make_spec(
         agent_id=f"a-{uuid.uuid4().hex[:8]}",
         role="general-helper",
         intent=intent,
-        roots=[os.getcwd()],
+        roots=roots,
         hint="small",
         sk=sk,
         depends_on=[],

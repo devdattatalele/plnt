@@ -36,7 +36,14 @@ def _resolve_inside(root: Path, allowed_roots: list[Path]) -> Path:
             return rr
         except ValueError:
             continue
-    raise SearchError(f"path {root} is not inside any allowed root")
+    # Give the model enough info to retry intelligently. The error wraps the
+    # allow-list so the agent's tool_result includes a usable hint.
+    allowed_str = ", ".join(str(a.resolve()) for a in allowed_roots) or "(none)"
+    raise SearchError(
+        f"path {root} is not inside any allowed root. "
+        f"Search must target one of: {allowed_str}. "
+        f"Tip: pass '.' to search your workdir."
+    )
 
 
 def search(

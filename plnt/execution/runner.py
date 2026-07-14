@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,9 +31,17 @@ def _emit(kind: str, **payload) -> None:
     print(json.dumps(evt, default=str), flush=True)
 
 
-# Module-level shared state so the SIGTERM handler (installed in main()) can
-# see the live transcript that _run_skill is appending to.
-_RUNNER_STATE: dict[str, Any] = {"transcript": []}
+@dataclass
+class _Run:
+    """Per-invocation runner state — replaces the old _RUNNER_STATE module dict.
+
+    Held as a fresh instance per `run_spec()` call so concurrent invocations
+    (e.g. inside Temporal Activity workers) never share transcript or spec
+    with each other.
+    """
+
+    spec: AgentSpec
+    transcript: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _read_spec() -> AgentSpec:
@@ -58,7 +67,7 @@ def _allowed_roots(spec: AgentSpec) -> list[Path]:
     return roots
 
 
-def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
+def _run_skill(run: _Run, allowed_roots: list[Path]) -> dict[str, Any]:
     """Execute the agent's skill against the LLM.
 
     v0: a single-turn ReAct-ish loop with the two tools. The skill markdown
@@ -74,17 +83,22 @@ def _run_skill(spec: AgentSpec, allowed_roots: list[Path]) -> dict[str, Any]:
     from plnt.compute.router import LLMRouter
     from plnt.execution.tools import execute, search
 
+    spec = run.spec
     max_steps = int(spec.inputs.get("max_steps", 6))
-    transcript: list[dict[str, Any]] = []
-    # Publish the transcript to the module-level state so the SIGTERM handler
-    # in main() can summarise what we did before the kill.
-    _RUNNER_STATE["transcript"] = transcript
+    transcript = run.transcript
     workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
 
     router = LLMRouter()
 
     skill_md = spec.inputs.get("skill_prompt") or _default_skill_prompt(spec.role)
-    user_msg = spec.inputs.get("intent") or json.dumps(spec.inputs)
+    # Always prepend the runtime context the model NEEDS to make valid tool
+    # calls. Otherwise it invents paths (the search 'path X is not inside any
+    # allowed root' error chain). Be explicit about cwd + the allow-list.
+    user_msg = _wrap_user_message(
+        spec.inputs.get("intent") or json.dumps(spec.inputs),
+        workdir,
+        allowed_roots,
+    )
 
     for step in range(1, max_steps + 1):
         _emit("model_call", step=step, model_hint=spec.model_hint)
@@ -262,6 +276,83 @@ def _default_skill_prompt(role: str) -> str:
     )
 
 
+def _wrap_user_message(intent: str, workdir: Path, allowed_roots: list[Path]) -> str:
+    """Prepend cwd + allow-list so the model stops hallucinating paths.
+
+    The repeating failure mode without this: model guesses an absolute path
+    like '/Users/me/project', search() rejects it as out-of-root, agent gives
+    up. Telling the model exactly what's reachable kills that loop.
+    """
+    roots = ", ".join(str(r.resolve()) for r in (allowed_roots or [workdir]))
+    workdir_str = str(workdir.resolve())
+    # List a few existing entries in the workdir so the model can see what
+    # work is already in progress (and not re-scaffold over it).
+    try:
+        listing = sorted(p.name for p in workdir.iterdir() if not p.name.startswith("."))[:20]
+    except OSError:
+        listing = []
+    listing_str = ", ".join(listing) if listing else "(empty)"
+    header = (
+        f"WORKDIR (your cwd; every execute() runs here): {workdir_str}\n"
+        f"WORKDIR contents: {listing_str}\n"
+        f"ALLOWED SEARCH ROOTS: {roots}\n"
+        f"RULES:\n"
+        f"- For execute(): use relative paths like \".\" or \"./src\". "
+        f"NEVER pass absolute paths like /Users/... in argv.\n"
+        f"- For search(): the root MUST be one of the ALLOWED SEARCH ROOTS "
+        f"above (or '.' for the workdir). Don't invent paths.\n\n"
+        f"TASK: {intent}"
+    )
+    return header
+
+
+def run_spec(spec: AgentSpec, *, install_sigterm: bool = False) -> dict[str, Any]:
+    """Run a single AgentSpec to completion and return its output dict.
+
+    This is the public, in-process callable form of the runner. Use it from:
+      * `main()` — the stdin shim that wraps it with event emission + SIGTERM.
+      * Temporal Activities (plnt-cloud) — call directly; transcripts and spec
+        live on the per-invocation `_Run` instance, so concurrent Activities
+        in the same worker process never share state.
+
+    `install_sigterm=True` installs a process-wide SIGTERM handler that emits
+    a `result` event from the current transcript before exit. Use this only
+    when this process owns the signal (the CLI shim does; a Temporal worker
+    does NOT, because signal handlers are process-wide and Activities run
+    concurrently).
+    """
+    run = _Run(spec=spec)
+
+    if install_sigterm:
+        import signal
+
+        def _on_sigterm(signum, frame):
+            workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
+            ans = _summarise_transcript(
+                run.spec, run.transcript, workdir,
+                reason=f"killed by signal {signum}",
+            )
+            _emit("result", output={"answer": ans, "transcript": run.transcript, "killed": True})
+            _emit("finished")
+            sys.exit(143)
+
+        try:
+            signal.signal(signal.SIGTERM, _on_sigterm)
+        except (ValueError, OSError):
+            pass
+
+    result = _run_skill(run, _allowed_roots(spec))
+    # Last-resort guard: result must always have a non-empty `answer`.
+    if not isinstance(result, dict) or not (result.get("answer") or "").strip():
+        workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
+        result = result if isinstance(result, dict) else {}
+        result["answer"] = _summarise_transcript(
+            run.spec, result.get("transcript", run.transcript), workdir,
+            reason="no answer from skill loop",
+        )
+    return result
+
+
 def main() -> int:
     try:
         spec = _read_spec()
@@ -270,38 +361,9 @@ def main() -> int:
         _emit("finished")
         return 2
 
-    # Install a SIGTERM handler so a watchdog-killed runner still emits a
-    # 'result' event summarising what it did before the kill. Otherwise the
-    # synth step downstream sees zero output from killed agents.
-    import signal
-    _RUNNER_STATE["spec"] = spec
-
-    def _on_sigterm(signum, frame):
-        workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
-        tx = _RUNNER_STATE.get("transcript", [])
-        ans = _summarise_transcript(spec, tx, workdir, reason=f"killed by signal {signum}")
-        _emit("result", output={"answer": ans, "transcript": tx, "killed": True})
-        _emit("finished")
-        sys.exit(143)
-
-    try:
-        signal.signal(signal.SIGTERM, _on_sigterm)
-    except (ValueError, OSError):
-        pass
-
     _emit("started", role=spec.role, depth=spec.depth)
     try:
-        result = _run_skill(spec, _allowed_roots(spec))
-        # Track the transcript on the shared state so the SIGTERM handler can see it.
-        if isinstance(result, dict) and "transcript" in result:
-            _RUNNER_STATE["transcript"] = result["transcript"]
-        # Last-resort guard: result must always have a non-empty `answer`.
-        if not isinstance(result, dict) or not (result.get("answer") or "").strip():
-            workdir = Path(os.environ.get("PLNT_WORKDIR", os.getcwd()))
-            result = result if isinstance(result, dict) else {}
-            result["answer"] = _summarise_transcript(
-                spec, result.get("transcript", []), workdir, reason="no answer from skill loop",
-            )
+        result = run_spec(spec, install_sigterm=True)
         _emit("result", output=result)
         return 0
     except SystemExit:

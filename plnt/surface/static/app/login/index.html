@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>plnt — sign in</title><meta name="robots" content="noindex, nofollow"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/app/_astro/Shell.C-IRPOxM.css"></head> <body>  <main class="login-shell"> <form class="login-card" id="login-form"> <header> <span class="kicker">PLNT</span> <h1>Sign in</h1> <p class="dim small" style="margin: 0.4rem 0 0;">
+username/password set in <code>~/.plnt/auth.toml</code>.
+          Change with <code>plnt auth set-password</code>.
+</p> </header> <label>
+username
+<input id="u" name="username" autocomplete="username" autofocus required> </label> <label>
+password
+<input id="p" name="password" type="password" autocomplete="current-password" required> </label> <p class="err" id="err" hidden></p> <button class="btn primary" id="submit" type="submit">Sign in</button> </form> </main> <script>
+    (function () {
+      const form = document.getElementById('login-form');
+      const errEl = document.getElementById('err');
+      const submitBtn = document.getElementById('submit');
+      form.addEventListener('submit', async function (ev) {
+        ev.preventDefault();
+        errEl.hidden = true;
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'signing in…';
+        const username = document.getElementById('u').value.trim();
+        const password = document.getElementById('p').value;
+        try {
+          const res = await fetch('/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ username, password }),
+          });
+          if (!res.ok) {
+            let detail = res.statusText;
+            try { detail = (await res.json()).detail || detail; } catch (_) {}
+            throw new Error(detail);
+          }
+          const next = new URLSearchParams(location.search).get('next') || '/app/';
+          location.replace(next);
+        } catch (err) {
+          errEl.textContent = String((err && err.message) || err);
+          errEl.hidden = false;
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+        }
+      });
+    })();
+  </script>  </body></html>

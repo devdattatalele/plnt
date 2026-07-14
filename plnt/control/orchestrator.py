@@ -260,23 +260,48 @@ class Orchestrator:
             handle.results = []
             return handle
 
+        # Resolve ONE shared project_dir for the whole swarm BEFORE planning so
+        # the planner can see it and emit relative paths instead of inventing
+        # absolute ones. The idea is borrowed from phoenix-os PhoenixContext:
+        # one workdir flows through every sub-agent so they all operate on the
+        # same project, not three disjoint sandboxes.
+        user_paths = _harvest_paths(intent, tri_history)
+        prior_project = _harvest_prior_project(tri_history)
+        project_dir = _resolve_project_dir(
+            intent, user_paths, prior_project, run_id, self.runs_root,
+        )
+        bb.emit("project_dir", payload={
+            "path": str(project_dir),
+            "source": "prior" if prior_project else ("user_path" if user_paths else "run_scoped"),
+        })
+
         # --- complex path: full plan + DAG ------------------------------------
         if tri.kind == "complex_task":
-            bb.emit("planner_start", payload={"intent": intent})
-            specs = llm_planner(intent, self.skills, history=tri_history)
+            bb.emit("planner_start", payload={"intent": intent, "workdir": str(project_dir)})
+            specs = llm_planner(
+                intent, self.skills, history=tri_history, project_dir=project_dir,
+            )
         else:
             # simple_task: one direct agent, no planner LLM call
             from plnt.control.planner_llm import _default_spec
-            specs = [_default_spec(intent, self.skills)]
+            specs = [_default_spec(intent, self.skills, project_dir=project_dir)]
 
-        # Inject any user-mentioned absolute paths into every agent's
-        # inputs so the LLM doesn't fall back to hallucinated paths like
-        # /users/me/project. We harvest paths from the current intent and
-        # the recent conversation, then push them through under both
-        # 'search_roots' (for read) and 'project_dir' (for write).
-        user_paths = _harvest_paths(intent, tri_history)
-        if user_paths:
-            specs = [_inject_paths(s, user_paths) for s in specs]
+        # Inject the shared workdir + read-only search_roots into every spec.
+        # search_roots is for reading the user's existing files; workdir is the
+        # single place writes land. Read != write.
+        specs = [_inject_workdir(s, project_dir, user_paths) for s in specs]
+
+        # Fold saved Integrations into AgentSpec.inputs. Planner-supplied
+        # values always win; this only fills inputs the planner didn't already
+        # specify (paths, API keys, etc. set via the web UI).
+        from plnt.surface.integrations import IntegrationsStore, merge_into_spec
+        _integrations = IntegrationsStore()
+        specs = [merge_into_spec(s, _integrations) for s in specs]
+
+        # If the LLM didn't sequence the DAG and the plan obviously has a
+        # producer (scaffolder/init/bootstrap) feeding consumers, wire the
+        # implicit edges so we don't race-add a navbar to an empty dir.
+        specs = _auto_chain_producer_consumer(specs)
 
         specs = [s.model_copy(update={"run_id": run_id}) for s in specs]
         bb.emit("plan", payload={
@@ -293,7 +318,13 @@ class Orchestrator:
 
         # Produce the user-facing answer. Always non-empty.
         ans, source = _build_user_answer(intent, tri, out, specs)
-        bb.emit("answer", payload={"text": ans, "source": source})
+        # Tack on the project_dir footer so the NEXT conversation turn can
+        # parse it back out via _harvest_prior_project — that's how Plnt gets
+        # phoenix-style session continuity for free, with no extra schema.
+        ans = _attach_project_footer(ans, project_dir)
+        bb.emit("answer", payload={
+            "text": ans, "source": source, "project_dir": str(project_dir),
+        })
 
         bb.emit("finished", payload={
             "spawned": out.spawned,
@@ -404,24 +435,291 @@ def _harvest_paths(intent: str, history: list) -> list[str]:
     return out
 
 
-def _inject_paths(spec, user_paths: list[str]):
-    """Add user paths to spec.inputs.search_roots and ensure project_dir is set.
+# ---------------------------------------------------------------------------
+# Shared project_dir — every spawn in a swarm cd's into the same dir so they
+# share files. Inspired by phoenix-os PhoenixContext.work_dir but extended
+# across our parallel DAG: the project IS the shared state.
+# ---------------------------------------------------------------------------
 
-    Also rewrite the sub-intent text to literally include the path so the
-    LLM cannot ignore it.
+# Parent dirs the user almost certainly DOESN'T want us scaffolding directly
+# into — they're containers for multiple projects, not a project themselves.
+_PARENT_HINTS = ("Documents", "code", "src", "Projects", "workspace", "repos", "Desktop")
+# Markers that say "this IS already a project root" — STRONG signals only.
+# .git is explicitly EXCLUDED here because many workspace/parent dirs are
+# git-managed (mono-repos, dotfiles, the user's own ~/Documents/x dir) and
+# would otherwise hijack the project_dir resolution.
+_PROJECT_MARKERS = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+# Verbs that mean "create something new"; with these, we ALWAYS carve a
+# subdir, never write into an existing root.
+_CREATE_VERBS = _re.compile(
+    r"\b(build|create|make|scaffold|generate|init|initialise|initialize|"
+    r"start|new|setup|set\s+up|bootstrap)\b",
+    _re.IGNORECASE,
+)
+# Dirs to skip when counting "is this a project container" — they're noise.
+_NOISE_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
+    "dist", "build", ".cache", ".pytest_cache", "target", ".turbo",
+}
+
+
+def _looks_like_project_root(p: Path) -> bool:
+    try:
+        return any((p / m).exists() for m in _PROJECT_MARKERS)
+    except OSError:
+        return False
+
+
+def _looks_like_parent_container(p: Path) -> bool:
+    """True if `p` is a workspace that HOLDS projects rather than IS one."""
+    parts = p.parts
+    has_parent_hint = any(seg in _PARENT_HINTS for seg in parts)
+    try:
+        kids = [
+            c for c in p.iterdir()
+            if c.is_dir() and not c.name.startswith(".") and c.name not in _NOISE_DIRS
+        ]
+    except OSError:
+        return has_parent_hint
+    # Strong signal: a path with Documents/code/src/etc. in it is a parent
+    # regardless of marker files. Conventional user workspaces.
+    if has_parent_hint:
+        return True
+    # Even without hints, ≥3 non-noise child dirs and no top-level project
+    # markers means it's a container.
+    if len(kids) >= 3 and not _looks_like_project_root(p):
+        return True
+    return False
+
+
+# Stop-words pulled out of the slug so "build me a chatbot please" → "chatbot".
+_STOP_WORDS = {
+    "a", "an", "the", "me", "my", "please", "pls", "with", "and", "of", "in",
+    "on", "for", "to", "from", "now", "next", "new", "some", "any", "this",
+    "that", "build", "create", "make", "scaffold", "generate", "init",
+    "initialise", "initialize", "start", "setup", "set", "up", "bootstrap",
+    "project", "app", "thing", "stuff", "site", "website", "page", "service",
+    "want", "need", "would", "like",
+}
+
+
+def _slug_from_intent(intent: str, max_len: int = 32) -> str:
+    """Pull the meaningful noun out of an intent.
+
+    "build a chatbot for me"        → "chatbot"
+    "scaffold a vite project"       → "vite"
+    "create next-base portfolio"    → "next-base-portfolio"
     """
-    if not user_paths:
-        return spec
+    words = [
+        w for w in _re.split(r"[^a-zA-Z0-9-]+", (intent or "").lower())
+        if w and w not in _STOP_WORDS and len(w) > 1
+    ]
+    if not words:
+        return "task"
+    slug = "-".join(words)[:max_len].strip("-")
+    return slug or "task"
+
+
+# Back-compat shim — tests/other callers may import this.
+def _slugify(text: str, max_len: int = 32) -> str:
+    return _slug_from_intent(text, max_len)
+
+
+def _resolve_project_dir(
+    intent: str,
+    user_paths: list[str],
+    prior_project: str | None,
+    run_id: str,
+    runs_root: Path | None,
+) -> Path:
+    """Decide ONE workdir for the whole swarm.
+
+    Resolution order:
+      1. Prior turn's project_dir (session continuity) — BUT only if the
+         current intent is NOT a fresh create-verb ("build a new chatbot"
+         deserves its own dir, not last turn's vite app).
+      2. User-mentioned path that's already a project root (package.json /
+         pyproject.toml / Cargo.toml / go.mod) AND the verb is edit-style
+         ("add a navbar to /Users/x/myapp") — work IN their project.
+      3. User-mentioned parent container ("inside /Users/x/Documents/...")
+         OR any user path under a create-verb → carve a slug-named subdir.
+         "build chatbot inside ~/Documents/den-agent" →
+           ~/Documents/den-agent/chatbot/
+      4. Otherwise: <PLNT_HOME>/runs/<run_id>/project/.
+
+    Key invariant: a create-verb NEVER writes into an existing project root.
+    "Build me a new X" always creates a new dir, never overwrites the user's
+    existing project.
+    """
+    is_create = bool(_CREATE_VERBS.search(intent or ""))
+    slug = _slug_from_intent(intent)
+
+    # 1. Session continuity — but a create-verb resets the project.
+    if prior_project and not is_create:
+        p = Path(prior_project).expanduser()
+        if p.exists() or p.parent.exists():
+            p.mkdir(parents=True, exist_ok=True)
+            return p.resolve()
+
+    # 2/3. User mentioned a path
+    for raw in user_paths:
+        # Skip obvious non-paths the harvester regex catches by mistake
+        # (e.g. "/127.0.0.1" from a URL pasted into the prompt). Real
+        # filesystem targets either live under ~ or under /Users/, /home/,
+        # /tmp/, /var/, /opt/ — anything else at the root is almost
+        # certainly a misparse.
+        if raw.startswith("/") and not raw.startswith((
+            "/Users/", "/home/", "/tmp/", "/var/", "/opt/", "/srv/", "/mnt/", "/private/",
+        )):
+            continue
+        try:
+            p = Path(raw).expanduser().resolve()
+        except (OSError, ValueError):
+            continue
+
+        # If the path doesn't exist, treat the user as having named a target
+        # dir directly: make it and use it.
+        if not p.exists():
+            if p.parent.exists():
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    continue
+                return p
+            continue
+
+        # Parent-container check WINS over project-root check. A user typing
+        # ~/Documents/X with X.git inside is still telling us "this is my
+        # workspace, put the new thing inside it." The create-verb makes
+        # this unambiguous.
+        if _looks_like_parent_container(p):
+            child = p / slug
+            # If a project with that name already exists, fall through to
+            # it for session-style continuity instead of clobbering. Append
+            # a run-id suffix only if we'd otherwise collide with a non-
+            # project-shaped dir.
+            if child.exists() and not _looks_like_project_root(child):
+                child = p / f"{slug}-{run_id.split('-', 1)[-1][:6]}"
+            child.mkdir(parents=True, exist_ok=True)
+            return child
+
+        if _looks_like_project_root(p) and not is_create:
+            # Editing inside their existing project.
+            return p
+
+        if _looks_like_project_root(p) and is_create:
+            # They named their project root but asked us to create a NEW
+            # thing — carve a slug subdir inside it.
+            child = p / slug
+            child.mkdir(parents=True, exist_ok=True)
+            return child
+
+        # Existing dir, nothing fits — treat as project root.
+        return p
+
+    # 4. Run-scoped fallback
+    from plnt.config import paths as _paths
+
+    base = (runs_root or _paths().runs) / run_id / "project"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+_PROJECT_DIR_RE = _re.compile(
+    r"(?:project[_\s-]?dir|workdir|working in)[:\s]+`?(/[\w./_-]+|~/[\w./_-]+)`?",
+    _re.IGNORECASE,
+)
+
+
+def _harvest_prior_project(history: list) -> str | None:
+    """Pull the most recent project_dir we mentioned to the user from history.
+
+    We emit answers that include "Working in: <path>" so a follow-up turn can
+    pick it up and reuse the same project. This is how Plnt gets phoenix-style
+    session continuity without adding a Session schema.
+    """
+    if not history:
+        return None
+    for t in reversed(history):
+        ans = getattr(t, "answer", "") if not isinstance(t, dict) else t.get("answer", "")
+        if not ans:
+            continue
+        m = _PROJECT_DIR_RE.search(ans)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _inject_workdir(spec, project_dir: Path, user_paths: list[str]):
+    """Set inputs.workdir (sandbox honors it) and search_roots (read-only).
+
+    The sandbox's process.py reads inputs.workdir or inputs.output_dir to pick
+    the spawn's cwd. Setting it here means every sibling agent shares the same
+    project root — they can read each other's files.
+    """
     new_inputs = dict(spec.inputs)
-    roots = list(new_inputs.get("search_roots") or [])
+    new_inputs["workdir"] = str(project_dir)
+
+    # search_roots: project_dir is always readable; user-mentioned paths are
+    # readable; the planner's own search_roots from the plan are kept.
+    roots: list[str] = []
+    for r in (new_inputs.get("search_roots") or []):
+        if isinstance(r, str) and r and r not in roots:
+            roots.append(r)
     for p in user_paths:
         if p not in roots:
             roots.append(p)
+    pd_str = str(project_dir)
+    if pd_str not in roots:
+        roots.append(pd_str)
     new_inputs["search_roots"] = roots
-    new_inputs.setdefault("project_dir", user_paths[0])
-    # Make the intent string explicit about the path so the model can't
-    # hallucinate /users/me/project.
-    cur_intent = new_inputs.get("intent", "")
-    if user_paths[0] not in cur_intent:
-        new_inputs["intent"] = f"{cur_intent}\n\nUse this exact absolute path: {user_paths[0]}"
     return spec.model_copy(update={"inputs": new_inputs})
+
+
+# Hints for "this agent produces the project skeleton" vs "this agent edits it"
+_PRODUCER_RE = _re.compile(
+    r"(scaffold|^init|bootstrap|create-(?:project|app|next|vite)|setup|generate-(?:project|app)|skeleton)",
+    _re.IGNORECASE,
+)
+
+
+def _attach_project_footer(ans: str, project_dir: Path) -> str:
+    """Append a stable, parseable footer so next turn's planner sees it.
+
+    _harvest_prior_project() looks for the exact phrase "Working in:" in the
+    history's answers and lifts the path out. Keep the wording stable.
+    """
+    if not ans:
+        ans = ""
+    footer = f"\n\nWorking in: {project_dir}"
+    if "Working in:" in ans:
+        return ans
+    return ans.rstrip() + footer
+
+
+def _auto_chain_producer_consumer(specs: list) -> list:
+    """If the planner emitted N peers with no deps but one is clearly a
+    producer (vite-scaffolder, project-init, repo-bootstrap), make every other
+    spec depend on it so we don't race-edit an empty dir.
+
+    Conservative: only kicks in when (a) no spec already has depends_on, and
+    (b) exactly one role matches the producer regex.
+    """
+    if len(specs) < 2:
+        return specs
+    any_deps = any(s.inputs.get("depends_on") for s in specs if isinstance(s.inputs, dict))
+    if any_deps:
+        return specs
+    producers = [s for s in specs if _PRODUCER_RE.search(s.role or "")]
+    if len(producers) != 1:
+        return specs
+    producer = producers[0]
+    out = []
+    for s in specs:
+        if s.id == producer.id:
+            out.append(s)
+            continue
+        new_inputs = dict(s.inputs)
+        new_inputs["depends_on"] = [producer.id]
+        out.append(s.model_copy(update={"inputs": new_inputs}))
+    return out

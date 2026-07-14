@@ -26,6 +26,51 @@ from plnt.execution.blackboard import Blackboard
 from plnt.execution.sandbox.base import SandboxResult
 from plnt.execution.spec import AgentSpec
 
+# Files/dirs that mean "the agent ran tooling but produced no real work."
+# An agent whose entire output is .npm/_logs is functionally silent — we
+# treat it as such so the synth doesn't pretend it succeeded.
+_LOG_ONLY_PREFIXES = (
+    ".npm/_logs/",
+    ".npm/_cacache/",
+    ".npm/_update-notifier",
+    ".cache/",
+    ".local/share/pnpm-state/",
+    ".yarn/cache/",
+    "node_modules/.package-lock",
+)
+
+# Dirs we never want to enumerate when reporting "files written" — they
+# blow up file counts to 20k+ and add no signal. The user cares about
+# what their AGENT wrote, not what npm cached. These match by path segment
+# (we skip the whole subtree).
+_NOISE_DIR_NAMES = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
+    "dist", "build", ".cache", ".pytest_cache", "target", ".turbo",
+    ".npm", ".yarn", ".pnpm-store",
+}
+
+
+def _is_log_only_path(rel: str) -> bool:
+    return any(rel.startswith(p) for p in _LOG_ONLY_PREFIXES)
+
+
+def _scan_workdir_files(workdir: Path, max_files: int = 5000) -> list[str]:
+    """List relative file paths in workdir, skipping noise subtrees.
+
+    Manual walk (not rglob) so we can prune .git/node_modules/etc. and not
+    spend seconds descending into 20k-file caches.
+    """
+    import os as _os
+    out: list[str] = []
+    for dirpath, dirnames, filenames in _os.walk(workdir):
+        dirnames[:] = [d for d in dirnames if d not in _NOISE_DIR_NAMES]
+        for fn in filenames:
+            rel = _os.path.relpath(_os.path.join(dirpath, fn), workdir)
+            out.append(rel)
+            if len(out) >= max_files:
+                return out
+    return out
+
 
 class ProcessSandbox:
     """Subprocess-based sandbox. One instance per agent spawn."""
@@ -52,15 +97,24 @@ class ProcessSandbox:
         from plnt.config import paths as _paths
 
         explicit_out = None
+        tenant_id = None
         if isinstance(spec.inputs, dict):
             explicit_out = spec.inputs.get("output_dir") or spec.inputs.get("workdir")
+            tenant_id = spec.inputs.get("tenant_id")
 
         if explicit_out:
             workdir = Path(str(explicit_out)).expanduser().resolve()
             workdir.mkdir(parents=True, exist_ok=True)
             workdir_is_explicit = True
         else:
-            base = _paths().runs / spec.run_id / "work" / spec.id
+            # When a tenant context is present, partition the workdir tree by
+            # tenant so cross-tenant filesystem reach is impossible by path
+            # alone (defense-in-depth alongside `allowed_roots` enforcement
+            # inside the runner's search/execute tools).
+            if tenant_id:
+                base = _paths().runs / "tenants" / str(tenant_id) / spec.run_id / "work" / spec.id
+            else:
+                base = _paths().runs / spec.run_id / "work" / spec.id
             workdir = base
             workdir.mkdir(parents=True, exist_ok=True)
             workdir_is_explicit = False
@@ -146,15 +200,27 @@ class ProcessSandbox:
             wall = time.monotonic() - started
 
             # Capture the file manifest the agent created so the user can
-            # see what work landed where.
+            # see what work landed where. Prune noise subtrees (.git,
+            # node_modules, .venv, etc.) so the file count means something
+            # and the walk doesn't take 5 seconds in a real project.
             try:
-                files_written = sorted(
-                    str(p.relative_to(workdir))
-                    for p in workdir.rglob("*")
-                    if p.is_file()
-                )
+                files_written = sorted(_scan_workdir_files(workdir))
+                meaningful_files = [
+                    p for p in files_written if not _is_log_only_path(p)
+                ]
             except Exception:
                 files_written = []
+                meaningful_files = []
+
+            # Truthful "done": if the agent finished cleanly but wrote nothing
+            # the user can use, surface as silent so the synth treats it as
+            # a failed agent rather than a successful one with no answer.
+            silent = (
+                not bool(self._kill_reason)
+                and rc == 0
+                and not meaningful_files
+                and output is None
+            )
 
             self.bb.emit(
                 "finished",
@@ -167,6 +233,13 @@ class ProcessSandbox:
                     "workdir": str(workdir),
                     "files_written": files_written[:50],
                     "file_count": len(files_written),
+                    "meaningful_file_count": len(meaningful_files),
+                    "silent": silent,
+                    "status": (
+                        "killed" if self._kill_reason
+                        else "silent" if silent
+                        else "ok"
+                    ),
                 },
             )
 
