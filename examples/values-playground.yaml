@@ -1,0 +1,38 @@
+# Example override values for `helm install plnt-playground plnt/charts/playground-api -f examples/values-playground.yaml`.
+#
+# This registers a mix of mock models (for the demo when no GPU is around) and
+# a placeholder for a real vLLM-served model. Uncomment the vLLM entry after
+# the vllm-runtime chart is deployed and the pods are Ready.
+
+image:
+  repository: plnt/playground-api
+  tag: dev
+
+replicaCount: 2
+
+models:
+  - id: plnt-mock-7b
+    backend: mock
+    runtime: mock
+  - id: plnt-mock-70b
+    backend: mock
+    runtime: mock
+  # - id: llama-3-8b-instruct
+  #   backend: http
+  #   runtime: vllm
+  #   upstream_url: http://vllm-llama-3-8b.plnt.svc.cluster.local:8000
+  #   upstream_model: meta-llama/Llama-3-8B-Instruct
+
+ingress:
+  enabled: true
+  className: nginx
+  host: playground.plnt.work
+  tls:
+    enabled: true
+    secretName: playground-plnt-work-tls
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70

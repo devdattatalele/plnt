@@ -1,0 +1,22 @@
+plnt playground API installed as {{ include "playground-api.fullname" . }}.
+
+Models registered:
+{{- range .Values.models }}
+  - {{ .id }} ({{ .backend }}{{ if .runtime }}, {{ .runtime }}{{ end }})
+{{- end }}
+
+Reach it in-cluster:
+  curl http://{{ include "playground-api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local/v1/models
+
+{{- if .Values.ingress.enabled }}
+
+Reach it from outside:
+  https://{{ .Values.ingress.host }}/v1/models
+
+Point DNS ({{ .Values.ingress.host }}) at your ingress controller's external IP.
+{{- else }}
+
+Ingress is disabled. Port-forward for local testing:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "playground-api.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://127.0.0.1:8080/v1/models
+{{- end }}

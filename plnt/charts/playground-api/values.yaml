@@ -1,0 +1,86 @@
+# Default values for playground-api.
+# Override with `-f values-playground.yaml` on `helm install`.
+
+image:
+  repository: plnt/playground-api
+  tag: dev
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# Playground model registry. Each entry is registered as a callable model on
+# GET /v1/models and routable via POST /v1/chat/completions. `backend: mock` is
+# self-contained; `backend: http` proxies to any OpenAI-shape upstream (vLLM,
+# TGI, SGLang, llama.cpp server).
+models:
+  - id: plnt-mock-7b
+    backend: mock
+    runtime: mock
+  # Example real-runtime entry — uncomment once vllm-runtime chart is deployed
+  # and reachable inside the cluster.
+  # - id: llama-3-8b-instruct
+  #   backend: http
+  #   runtime: vllm
+  #   upstream_url: http://vllm-llama-3-8b.plnt.svc.cluster.local:8000
+  #   upstream_model: meta-llama/Llama-3-8B-Instruct
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# Ingress for playground.plnt.work. Requires an ingress controller
+# (ingress-nginx on kind, nginx or alb on prod).
+ingress:
+  enabled: true
+  className: nginx
+  host: playground.plnt.work
+  path: /
+  pathType: Prefix
+  annotations:
+    # SSE requires disabling proxy buffering, otherwise chunks batch up.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    enabled: true
+    secretName: playground-plnt-work-tls
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra environment variables (e.g. API keys for upstream backends).
+extraEnv: []
+# - name: VLLM_API_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: vllm-api-key
+#       key: token

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: playground-api
+description: |
+  plnt playground API — OpenAI-compatible inference gateway. Deploys the
+  FastAPI service, wires it to a ConfigMap-driven model registry, and exposes
+  it at playground.plnt.work via Ingress.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - plnt
+  - inference
+  - openai-compatible
+  - vllm
+home: https://plnt.work
+sources:
+  - https://github.com/devdattatalele/plnt
+maintainers:
+  - name: plnt
+    url: https://plnt.work

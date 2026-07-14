@@ -1,0 +1,72 @@
+# Helm overlay for deploying playground-api to DigitalOcean Kubernetes.
+#
+# Assumes:
+#   * DOKS cluster is up and `kubectl` context points at it.
+#   * ingress-nginx is installed (chart: ingress-nginx/ingress-nginx).
+#   * cert-manager is installed and the `letsencrypt-prod` ClusterIssuer from
+#     cert-issuer.yaml is applied.
+#   * The image has been pushed to DO Container Registry as
+#     registry.digitalocean.com/plnt/playground-api:0.1.0
+#   * A registry pull secret named `docr-plnt` exists in the target namespace
+#     (created by `doctl registry kubernetes-manifest | kubectl apply`).
+#
+# Install:
+#   helm install plnt-playground plnt/charts/playground-api \
+#     -n plnt --create-namespace \
+#     -f deploy/do-k8s/values-do.yaml
+
+image:
+  repository: registry.digitalocean.com/plnt/playground-api
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# The pull secret is created by `doctl registry kubernetes-manifest`.
+imagePullSecrets:
+  - name: docr-plnt
+
+replicaCount: 2
+
+models:
+  - id: plnt-mock-7b
+    backend: mock
+    runtime: mock
+  - id: plnt-mock-70b
+    backend: mock
+    runtime: mock
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: api.plnt.work
+  path: /
+  pathType: Prefix
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://plnt.work, https://playground.plnt.work"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+  tls:
+    enabled: true
+    secretName: api-plnt-work-tls
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 300m
+    memory: 384Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70

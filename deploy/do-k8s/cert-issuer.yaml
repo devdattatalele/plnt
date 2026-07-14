@@ -1,0 +1,41 @@
+# Let's Encrypt ClusterIssuer for cert-manager. Applied once per cluster,
+# then any Ingress annotated `cert-manager.io/cluster-issuer: letsencrypt-prod`
+# gets a real cert.
+#
+# Replace ACME_EMAIL with a real address you monitor — Let's Encrypt sends
+# expiry-warning mail there.
+#
+# Apply:
+#   kubectl apply -f deploy/do-k8s/cert-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    email: ACME_EMAIL@plnt.work
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+# Staging issuer — same shape, hits Let's Encrypt staging (untrusted certs,
+# no rate limit). Use for initial testing to avoid burning the 5-per-week
+# duplicate-cert quota on prod while iterating.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    email: ACME_EMAIL@plnt.work
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx

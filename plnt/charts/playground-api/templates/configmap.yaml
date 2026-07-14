@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "playground-api.fullname" . }}-models
+  labels:
+    {{- include "playground-api.labels" . | nindent 4 }}
+data:
+  models.json: |-
+    {{- toJson .Values.models | nindent 4 }}
