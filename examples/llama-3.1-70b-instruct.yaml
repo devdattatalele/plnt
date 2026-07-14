@@ -1,0 +1,42 @@
+---
+# One command to deploy Llama 3.1 70B via the plnt platform:
+#
+#   kubectl apply -f examples/llama-3.1-70b-instruct.yaml
+#
+# The plnt operator picks up this resource, starts a Temporal
+# DeployModelWorkflow, which:
+#   1. validates the manifest
+#   2. pulls + hash-verifies the weights from the storage URI
+#   3. helm-installs the vllm-runtime chart with these values, at 5% canary traffic
+#   4. runs a smoke test (10 prompts, TTFT p50 must be ≤ 250ms)
+#   5. promotes to 100% traffic or rolls back
+#
+# Watch progress:
+#   kubectl get inferencemodel llama-3.1-70b-instruct -w
+#   kubectl describe inferencemodel llama-3.1-70b-instruct
+apiVersion: plnt.work/v1
+kind: InferenceModel
+metadata:
+  name: llama-3.1-70b-instruct
+  namespace: default
+spec:
+  runtime: vllm
+  model:
+    name: meta-llama/Llama-3.1-70B-Instruct
+    storageUri: s3://plnt-models/llama-3.1-70b/fp16
+    quantization: fp16
+  resources:
+    gpu: 2
+    gpuClass: nvidia.com/h100
+    memoryGiB: 160
+  replicas:
+    min: 1
+    max: 4
+  autoscaling:
+    targetTokensPerSecond: 1500
+  canary:
+    trafficPercent: 5
+    smokeTest:
+      prompts: 10
+      ttftBudgetMs: 250
+      tpotBudgetMs: 40

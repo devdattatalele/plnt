@@ -1,0 +1,58 @@
+# fly.toml — plnt playground API on Fly.io
+#
+# Deploy:
+#   fly auth login                             # once
+#   fly launch --no-deploy --copy-config       # creates the app; edit region if needed
+#   fly secrets set NIM_API_KEY=nvapi-...      # NVIDIA NIM key (never commit this)
+#   fly deploy
+#   fly certs add playground.plnt.work         # then add the CNAME it prints at your DNS
+#
+# The container image is built from docker/playground-api.Dockerfile.
+# Everything below is source-controlled; secrets live only in `fly secrets`.
+
+app = "plnt-playground"
+primary_region = "iad"
+
+[build]
+  dockerfile = "docker/playground-api.Dockerfile"
+
+[env]
+  # Configured origins for browser CORS (comma-separated).
+  PLNT_PLAYGROUND_CORS_ORIGINS = "https://plnt.work,https://play.plnt.work,https://playground.plnt.work"
+
+  # Model registry — 4 models proxied to NVIDIA NIM hosted API.
+  # The `api_key_env` field tells the discovery layer which env var to read at
+  # startup; the actual key ships via `fly secrets set NIM_API_KEY=...`.
+  PLNT_PLAYGROUND_MODELS = """
+  [
+    {"id":"llama-3.1-70b-instruct","backend":"http","runtime":"nim-hosted","upstream_url":"https://integrate.api.nvidia.com","upstream_model":"meta/llama-3.1-70b-instruct","api_key_env":"NIM_API_KEY"},
+    {"id":"nemotron-70b-instruct","backend":"http","runtime":"nim-hosted","upstream_url":"https://integrate.api.nvidia.com","upstream_model":"nvidia/llama-3.1-nemotron-70b-instruct","api_key_env":"NIM_API_KEY"},
+    {"id":"mixtral-8x22b-instruct","backend":"http","runtime":"nim-hosted","upstream_url":"https://integrate.api.nvidia.com","upstream_model":"mistralai/mixtral-8x22b-instruct-v0.1","api_key_env":"NIM_API_KEY"},
+    {"id":"deepseek-r1","backend":"http","runtime":"nim-hosted","upstream_url":"https://integrate.api.nvidia.com","upstream_model":"deepseek-ai/deepseek-r1","api_key_env":"NIM_API_KEY"}
+  ]
+  """
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

@@ -1,0 +1,38 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "vllm-runtime.fullname" . }}
+  labels:
+    {{- include "vllm-runtime.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "vllm-runtime.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    # Custom metric — tokens/sec/GPU from the /metrics scrape. Requires
+    # prometheus-adapter mapped to `plnt_tokens_per_sec_per_gpu`.
+    - type: Pods
+      pods:
+        metric:
+          name: plnt_tokens_per_sec_per_gpu
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetTokensPerSecond }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+{{- end }}

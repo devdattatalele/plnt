@@ -41,6 +41,7 @@ log = logging.getLogger("plnt.playground")
 # list of origins, or the literal "*" to open the door).
 DEFAULT_CORS_ORIGINS = [
     "https://plnt.work",
+    "https://play.plnt.work",
     "https://playground.plnt.work",
     "http://localhost:4321",
     "http://127.0.0.1:4321",

@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vllm-runtime.fullname" . }}
+  labels:
+    {{- include "vllm-runtime.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "vllm-runtime.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-runtime.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: {{ .Values.metrics.enabled | quote }}
+        prometheus.io/path: {{ .Values.metrics.path | quote }}
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+    spec:
+      serviceAccountName: {{ default (include "vllm-runtime.fullname" .) .Values.serviceAccount.name }}
+      {{- with .Values.initContainers.weightsVerifier }}
+      {{- if .enabled }}
+      initContainers:
+        - name: verify-weights
+          image: {{ .image }}
+          command: ["sh", "-c", "test -d {{ $.Values.model.mountPath }} && echo weights ok || (echo weights missing at {{ $.Values.model.mountPath }} && exit 1)"]
+          volumeMounts:
+            - name: model-cache
+              mountPath: {{ $.Values.model.mountPath }}
+      {{- end }}
+      {{- end }}
+      containers:
+        - name: vllm
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- range .Values.runtime.args }}
+            - {{ . | quote }}
+            {{- end }}
+            - --model={{ .Values.model.mountPath }}
+          env:
+            - name: PLNT_MODEL_NAME
+              value: {{ .Values.model.name | quote }}
+            - name: PLNT_QUANTIZATION
+              value: {{ .Values.model.quantization | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests:
+              {{ .Values.resources.gpuClass }}: {{ .Values.resources.gpu }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              {{ .Values.resources.gpuClass }}: {{ .Values.resources.gpu }}
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          volumeMounts:
+            - name: model-cache
+              mountPath: {{ .Values.model.mountPath }}
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: {{ include "vllm-runtime.fullname" . }}-weights
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

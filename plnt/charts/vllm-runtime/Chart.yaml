@@ -1,0 +1,13 @@
+apiVersion: v2
+name: vllm-runtime
+description: |
+  Deploys one vLLM inference pod serving one model. Installed by the plnt
+  DeployModelWorkflow — not usually invoked directly. See the parent plnt/
+  README for the platform overview.
+type: application
+version: 0.3.1
+appVersion: "0.6.3"        # vLLM upstream
+keywords: [vllm, inference, llm, gpu, kubernetes]
+maintainers:
+  - name: devdattatalele
+    url: https://github.com/devdattatalele

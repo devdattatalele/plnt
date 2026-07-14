@@ -1,0 +1,117 @@
+---
+# plnt.work/v1/InferenceModel — the entire deploy contract for one model.
+#
+# `kubectl apply -f examples/llama-3.1-70b-instruct.yaml` creates one of these.
+# The plnt operator (kopf) watches the resource and starts a Temporal
+# `DeployModelWorkflow`, which handles pull → helm install → smoke → promote.
+#
+# Apply:
+#   kubectl apply -f plnt/operators/crds/inferencemodel.yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferencemodels.plnt.work
+spec:
+  group: plnt.work
+  scope: Namespaced
+  names:
+    plural: inferencemodels
+    singular: inferencemodel
+    kind: InferenceModel
+    shortNames:
+      - im
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [runtime, model, resources]
+              properties:
+                runtime:
+                  type: string
+                  enum: [vllm, tgi, trt-llm, sglang]
+                  description: Which runtime chart to deploy.
+                model:
+                  type: object
+                  required: [name, storageUri]
+                  properties:
+                    name:
+                      type: string
+                      description: Canonical model name (e.g. meta-llama/Llama-3.1-70B-Instruct).
+                    storageUri:
+                      type: string
+                      description: Where the weights live (s3://, gs://, oci://, hf://).
+                    quantization:
+                      type: string
+                      enum: [fp16, fp8, awq-4bit, gptq-4bit]
+                      default: fp16
+                resources:
+                  type: object
+                  required: [gpu, gpuClass]
+                  properties:
+                    gpu:
+                      type: integer
+                      minimum: 1
+                    gpuClass:
+                      type: string
+                      description: Kubernetes GPU resource class (e.g. nvidia.com/h100).
+                    memoryGiB:
+                      type: integer
+                      minimum: 1
+                replicas:
+                  type: object
+                  properties:
+                    min: { type: integer, minimum: 0, default: 1 }
+                    max: { type: integer, minimum: 1, default: 3 }
+                autoscaling:
+                  type: object
+                  properties:
+                    targetTokensPerSecond: { type: integer, minimum: 1 }
+                canary:
+                  type: object
+                  properties:
+                    trafficPercent: { type: integer, minimum: 1, maximum: 100, default: 5 }
+                    smokeTest:
+                      type: object
+                      properties:
+                        prompts: { type: integer, minimum: 1, default: 10 }
+                        ttftBudgetMs: { type: integer, minimum: 1 }
+                        tpotBudgetMs: { type: integer, minimum: 1 }
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Validating, PullingWeights, Deploying, SmokeTesting, Promoting, Ready, RolledBack, Failed]
+                endpoint:
+                  type: string
+                workflowRunId:
+                  type: string
+                lastError:
+                  type: string
+                observedGeneration:
+                  type: integer
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Runtime
+          type: string
+          jsonPath: .spec.runtime
+        - name: GPU
+          type: string
+          jsonPath: .spec.resources.gpuClass
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Endpoint
+          type: string
+          jsonPath: .status.endpoint
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

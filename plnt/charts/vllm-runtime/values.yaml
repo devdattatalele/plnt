@@ -1,0 +1,71 @@
+# plnt/charts/vllm-runtime — default values.
+# Overridden per model by the DeployModelWorkflow.helm_install_canary activity.
+
+replicaCount: 1
+
+image:
+  repository: vllm/vllm-openai
+  tag: v0.6.3
+  pullPolicy: IfNotPresent
+
+# Model config. Populated from InferenceModel.spec.model.
+model:
+  name: meta-llama/Llama-3.1-8B-Instruct
+  storageUri: ""              # s3://, gs://, oci://, hf://
+  quantization: fp16          # fp16 | fp8 | awq-4bit | gptq-4bit
+  # Where to mount the pulled weights inside the pod.
+  mountPath: /mnt/models
+
+# GPU + compute. Populated from InferenceModel.spec.resources.
+resources:
+  gpu: 1
+  gpuClass: nvidia.com/h100   # nvidia.com/h100 | nvidia.com/a100 | nvidia.com/a10
+  requests:
+    cpu: "2"
+    memory: 16Gi
+  limits:
+    cpu: "8"
+    memory: 96Gi
+
+# Runtime flags for the vllm-openai entrypoint.
+runtime:
+  args:
+    - --host=0.0.0.0
+    - --port=8000
+    - --tensor-parallel-size=1
+    - --max-model-len=8192
+    - --gpu-memory-utilization=0.90
+    - --enable-prefix-caching
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+  # Custom metric — replicas scale up when tokens/sec/GPU trend up.
+  targetTokensPerSecond: 1500
+
+# Envoy VirtualService weight for canary vs stable. Set to 5 during canary,
+# patched to 100 by promote_to_stable.
+router:
+  trafficPercent: 100
+
+service:
+  type: ClusterIP
+  port: 8000
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Weights are pulled by an init container before vllm starts. The workflow
+# pre-fetches into a shared PVC; this init just verifies the path exists.
+initContainers:
+  weightsVerifier:
+    enabled: true
+    image: busybox:1.36
+
+# Enable /metrics scrape for Prometheus.
+metrics:
+  enabled: true
+  path: /metrics
+  port: 8000

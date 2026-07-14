@@ -1,0 +1,28 @@
+# Keep the build context small — the Dockerfile only needs plnt/playground/**
+# and plnt/__init__.py. Everything else is dead weight.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+.venv/
+venv/
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+tests/
+archived_logs/
+latest_logs/
+docs/
+skills/
+plnt-tui/
+plnt-tui-bin
+runtime.Dockerfile
+HANDOFF.md
+IMPROVEMENTS.md
+SETUP.md
+# Keep README, LICENSE, docker/, plnt/, pyproject.toml
