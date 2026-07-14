@@ -322,7 +322,7 @@ def auth_set_password(username: str, password: str) -> None:
     _paths.ensure()
     store = AuthStore()
     store.set_password(username, password)
-    console.print(f"[green]✓[/green] password set for {username!r} at {store.path}")
+    console.print(f"[green]OK[/green] password set for {username!r} at {store.path}")
 
 
 @auth.command("list-users")
@@ -362,7 +362,7 @@ def vendor_chat(source: str | None) -> None:
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst)
-    console.print(f"[green]✓[/green] vendored {src} → {dst}")
+    console.print(f"[green]OK[/green] vendored {src} -> {dst}")
 
 
 @skills.command("install")
@@ -395,7 +395,7 @@ def skills_install(source: str, dry_run: bool) -> None:
         console.print(f"[red]install failed:[/red] {e}")
         sys.exit(1)
 
-    console.print(f"[green]✓[/green] imported {result['imported']} skills from {result['source']}")
+    console.print(f"[green]OK[/green] imported {result['imported']} skills from {result['source']}")
     if result['skipped']:
         console.print(f"[yellow]skipped[/yellow] {result['skipped']} (already exist or malformed)")
     if result['skills']:

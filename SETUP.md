@@ -232,9 +232,9 @@ export PLNT_CLOUD_SMALL_MODEL="llama-3.1-8b-instant"
 ```
 
 Now:
-- SSD mounted + Ollama running → **local**, private, free.
-- SSD unplugged → **cloud**, automatic, no code change.
-- Both unreachable → **offline echo** (search-and-summarize only).
+- SSD mounted + Ollama running -> **local**, private, free.
+- SSD unplugged -> **cloud**, automatic, no code change.
+- Both unreachable -> **offline echo** (search-and-summarize only).
 
 Every switch is logged in the run's `events.jsonl` so you can audit "did anything leave the box?" with `grep -F '"backend":"cloud"'`.
 
@@ -350,7 +350,7 @@ cd -
   --ssl-keyfile "$PLNT_HOME/certs/server.key" \
   --ssl-certfile "$PLNT_HOME/certs/server.crt"
 
-# Trust the cert on the phone (Settings → Profiles).
+# Trust the cert on the phone (Settings -> Profiles).
 # Hit https://<your-ip>:7777/v1/health
 ```
 

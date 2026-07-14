@@ -15,7 +15,7 @@
 │   (Planner LLM)      plnt/compute/router.py  (called from runner) │
 └──────────────────────────┬────────────────────────────────────────┘
                            │  AgentSpec  (the only object that
-                           │              crosses Control→Execution)
+                           │              crosses Control->Execution)
 ┌──────────────────────────▼────────────────────────────────────────┐
 │ EXECUTION PLANE            ephemeral micro-agents in sandboxes    │
 │   AgentSpec          plnt/execution/spec.py                       │
@@ -34,7 +34,7 @@
 
 ## Hard rules
 
-1. **AgentSpec is the only Control→Execution object.**
+1. **AgentSpec is the only Control->Execution object.**
    Anything you want to enforce on a spawn lives in `AgentSpec` (depth, budget, isolation, tools).
 
 2. **Two tools only.** `search` + `execute`. The RLM pattern is the reason we can skip SQL — context lives in the filesystem and is reached through these.

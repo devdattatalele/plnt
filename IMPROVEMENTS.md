@@ -2,21 +2,21 @@
 
 Re-read of the four-plane diagram against the actual code in this commit, plus what to do next.
 
-**Test status:** 31/31 green (`pytest`), end-to-end CLI smoke test produces a clean JSONL audit log with the full `intent → spawn → started → model_call → tool_call → tool_result → result → finished` sequence.
+**Test status:** 31/31 green (`pytest`), end-to-end CLI smoke test produces a clean JSONL audit log with the full `intent -> spawn -> started -> model_call -> tool_call -> tool_result -> result -> finished` sequence.
 
 ## Confirmed: aligned with the plan
 
 | Plan property | Where it lives | Status |
 |---|---|---|
-| `AgentSpec` is the only Control→Execution object | `plnt/execution/spec.py` | ✅ enforced |
-| Two tools only (RLM) | `ALLOWED_TOOLS` in `spec.py` | ✅ schema-level validator rejects others |
-| Memory is files (no SQL) | `paths()` in `config.py` + `Blackboard` | ✅ pure JSONL + artifacts |
-| Sandbox is a ladder | `execution/sandbox/__init__.py` registry | ✅ rung 0 done, rungs 1–3 registered as future |
-| Framework owns skills (not the model) | `control/skills.py` | ✅ markdown loaded with mtime hot-reload |
-| Surface = task panels, not chat | `surface/server.py` | ✅ no `/chat` endpoint; only `/intents`, `/runs`, `/skills` |
-| Hard budget caps as last line of defense | `config.py` + `Budget` validator | ✅ ceilings enforced at parse time |
-| ACC monitors for loop/fanout/pingpong | `control/acc.py` | ✅ all three detectors with tests |
-| Offline-capable so testable without LLM | `compute/router.py::_echo_step` | ✅ deterministic fallback drives tests |
+| `AgentSpec` is the only Control->Execution object | `plnt/execution/spec.py` | [x] enforced |
+| Two tools only (RLM) | `ALLOWED_TOOLS` in `spec.py` | [x] schema-level validator rejects others |
+| Memory is files (no SQL) | `paths()` in `config.py` + `Blackboard` | [x] pure JSONL + artifacts |
+| Sandbox is a ladder | `execution/sandbox/__init__.py` registry | [x] rung 0 done, rungs 1–3 registered as future |
+| Framework owns skills (not the model) | `control/skills.py` | [x] markdown loaded with mtime hot-reload |
+| Surface = task panels, not chat | `surface/server.py` | [x] no `/chat` endpoint; only `/intents`, `/runs`, `/skills` |
+| Hard budget caps as last line of defense | `config.py` + `Budget` validator | [x] ceilings enforced at parse time |
+| ACC monitors for loop/fanout/pingpong | `control/acc.py` | [x] all three detectors with tests |
+| Offline-capable so testable without LLM | `compute/router.py::_echo_step` | [x] deterministic fallback drives tests |
 
 ## Misaligned / needs work
 

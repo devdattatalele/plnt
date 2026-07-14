@@ -25,7 +25,7 @@ def _escape_toml_string(v: str) -> str:
 
 
 class IntegrationsStore:
-    """File-backed map of skill_role → {input_name: value}."""
+    """File-backed map of skill_role -> {input_name: value}."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or (paths().home / "integrations.toml")

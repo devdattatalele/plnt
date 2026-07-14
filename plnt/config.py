@@ -70,4 +70,4 @@ DEFAULT_DEEP_MODEL = os.environ.get("PLNT_DEEP_MODEL", "llama3.1:8b")
 # Hard budget caps — last line of defense against runaway swarms.
 HARD_MAX_TOKENS_PER_SPAWN = 200_000
 HARD_MAX_WALL_SECONDS_PER_SPAWN = 1800
-HARD_MAX_DEPTH = 3  # planner → specialist → ephemeral. Anything deeper smells like a fork bomb.
+HARD_MAX_DEPTH = 3  # planner -> specialist -> ephemeral. Anything deeper smells like a fork bomb.

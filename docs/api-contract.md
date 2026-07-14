@@ -53,7 +53,7 @@ Request:
     {"role": "system", "content": "You are helpful."},  // optional
     {"role": "user", "content": "hello"}
   ],
-  "stream": false,          // default false; true → SSE
+  "stream": false,          // default false; true -> SSE
   "max_tokens": 256,        // default 256, 1..8192
   "temperature": 0.7,       // default 0.7, 0.0..2.0
   "top_p": 1.0              // default 1.0, 0.0..1.0

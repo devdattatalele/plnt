@@ -153,7 +153,7 @@ class DockerSandbox:
         )
         watchdog.start()
 
-        # Stream stdout → blackboard.
+        # Stream stdout -> blackboard.
         events_out: list[dict] = []
         output: dict | None = None
         try:

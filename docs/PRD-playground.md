@@ -53,17 +53,17 @@ what the cluster can serve.
 
 ## 4. Non-goals
 
-- ❌ Rate limiting, API keys, per-user quotas. The cluster's HPA is the rate
+- [no] Rate limiting, API keys, per-user quotas. The cluster's HPA is the rate
   limiter of last resort; over that, we accept 429s from the pod.
-- ❌ Chat history, saved conversations, sharing. Every session is
+- [no] Chat history, saved conversations, sharing. Every session is
   ephemeral; refresh = wipe.
-- ❌ RAG, tools, function calling. Just chat completions.
-- ❌ Multi-tenant isolation. One playground, one shared cluster budget.
-- ❌ Anything on-device, offline, or in a service worker. Server-rendered
+- [no] RAG, tools, function calling. Just chat completions.
+- [no] Multi-tenant isolation. One playground, one shared cluster budget.
+- [no] Anything on-device, offline, or in a service worker. Server-rendered
   chat, SSE for streaming.
-- ❌ A "compare two models side by side" panel in v1 — nice to have, but
+- [no] A "compare two models side by side" panel in v1 — nice to have, but
   not required for the interview surface.
-- ❌ Custom model uploads from the UI. Model lifecycle is a Helm concern
+- [no] Custom model uploads from the UI. Model lifecycle is a Helm concern
   (see G5); the UI reads what the cluster serves.
 
 ## 5. Success metrics
@@ -78,7 +78,7 @@ Measured on the deployed API + a single-page-app analytic on the site.
 | p99 TTFT, mock backend                        | < 2s             | API latency histogram, p99.                                        |
 | API uptime                                    | 99.5%            | External check (e.g. Better Uptime free tier) hitting `/healthz`.  |
 | Cost                                          | ≤ $30/mo         | DO invoice.                                                        |
-| Time from clicking Send → first token visible | < 2s (mock)      | Manual, on a fresh incognito session.                              |
+| Time from clicking Send -> first token visible | < 2s (mock)      | Manual, on a fresh incognito session.                              |
 
 ## 6. Scope — v1 (this repo, shipped)
 
@@ -184,7 +184,7 @@ Measured on the deployed API + a single-page-app analytic on the site.
    `playground.plnt.work` live with mock models. Cloudflare A record added.
 3. **W0 +2d** — site agent flips `PUBLIC_PLNT_ENDPOINT` to
    `https://playground.plnt.work`, redeploys site. End-to-end demo works from
-   `plnt.work` landing → `/playground` → chat.
+   `plnt.work` landing -> `/playground` -> chat.
 4. **W0 +7d** — write the `vllm-runtime` chart (HANDOFF Phase 1).
 5. **W0 +14d** — first real (CPU-stub or single-GPU) model registered in
    the playground. Mock stays as the fast-path default.

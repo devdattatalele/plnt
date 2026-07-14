@@ -1,0 +1,25 @@
+# CODEOWNERS — reviewers auto-requested per touched path.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default catch-all
+*                                    @devdattatalele
+
+# Platform code
+/plnt/playground/                    @devdattatalele
+/plnt/charts/                        @devdattatalele
+/plnt/operators/                     @devdattatalele
+/plnt/workflows/                     @devdattatalele
+
+# Deploy + infra
+/deploy/                             @devdattatalele
+/docker/                             @devdattatalele
+/fly.toml                            @devdattatalele
+
+# Docs
+/docs/                               @devdattatalele
+*.md                                 @devdattatalele
+
+# Community + policy
+/CODE_OF_CONDUCT.md                  @devdattatalele
+/CONTRIBUTING.md                     @devdattatalele
+/SECURITY.md                         @devdattatalele

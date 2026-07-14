@@ -12,7 +12,7 @@ API primitives:
   GET  /v1/health               — liveness (unauthenticated)
 
 Auth:
-  POST /v1/auth/login           — body {username, password} → sets cookie
+  POST /v1/auth/login           — body {username, password} -> sets cookie
   POST /v1/auth/logout          — clears cookie
   GET  /v1/auth/me              — current session info
 

@@ -3,7 +3,7 @@
 Sources, in order of precedence:
 
 1. `PLNT_PLAYGROUND_MODELS` env var — a JSON array of model specs. This is what
-   the Helm chart injects via ConfigMap → env.
+   the Helm chart injects via ConfigMap -> env.
 2. `PLNT_PLAYGROUND_CONFIG` env var — path to a JSON/YAML file containing the
    same array. Useful for local dev.
 3. Built-in default — a single mock model so `helm install` with no values still

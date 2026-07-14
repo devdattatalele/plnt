@@ -49,7 +49,7 @@ If you see the stub reply and expected a real one, check:
 
 1. **API is up.** `curl -s http://127.0.0.1:8080/healthz` should return
    `{"status":"ok"}`.
-2. **CORS.** Open DevTools → Network → look for a red preflight
+2. **CORS.** Open DevTools -> Network -> look for a red preflight
    (`OPTIONS`) request. If the `Access-Control-Allow-Origin` header is
    missing, `PLNT_PLAYGROUND_CORS_ORIGINS` in the API's env may have been
    set narrower than expected. Unset it and restart the API.
@@ -137,6 +137,6 @@ frame-shape assertions in that test to match.
 |--------------------------------------------------------|---------------------------------------------------------------------------------------------|
 | Chat panel always shows "Stub mode" — no live reply     | API down, wrong endpoint, CORS blocked, or model id mismatch. Check DevTools Network tab.  |
 | CORS preflight red in DevTools                          | Add your dev origin to `PLNT_PLAYGROUND_CORS_ORIGINS`, or unset it to use defaults.        |
-| `plnt playground up` complains about port in use        | `lsof -iTCP:8080 -sTCP:LISTEN` → kill, or `plnt playground up --port 8090`.                |
+| `plnt playground up` complains about port in use        | `lsof -iTCP:8080 -sTCP:LISTEN` -> kill, or `plnt playground up --port 8090`.                |
 | Site can't find `PUBLIC_PLNT_ENDPOINT`                  | It's a Vite/Astro `PUBLIC_*` prefix — must be set BEFORE `npm run dev`, not exported later. |
 | API's `/v1/models` returns `[]`                         | `PLNT_PLAYGROUND_CONFIG` path doesn't exist or JSON is malformed. Restart with a fixed file. |

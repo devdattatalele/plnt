@@ -47,7 +47,7 @@ async def pull_and_verify_weights(spec: dict[str, Any]) -> dict[str, Any]:
     """Fetch weights from the CAS-backed registry, hash-verify, cache locally."""
     storage_uri = spec["model"]["storageUri"]
     activity.logger.info("pulling weights from %s", storage_uri)
-    # Real implementation would stream weights → CAS + emit heartbeats.
+    # Real implementation would stream weights -> CAS + emit heartbeats.
     return {"weights_local_path": "/mnt/models/current", "verified": True}
 
 
@@ -109,9 +109,9 @@ async def run_smoke_test(payload: dict[str, Any]) -> dict[str, Any]:
 @activity.defn
 async def promote_to_stable(release: dict[str, Any]) -> dict[str, Any]:
     """Scale canary to full traffic; drop the -canary suffix in the router."""
-    # Real impl would patch the Envoy VirtualService weights 5% → 100% and
+    # Real impl would patch the Envoy VirtualService weights 5% -> 100% and
     # rename the release.
-    activity.logger.info("promoting %s → stable", release["release"])
+    activity.logger.info("promoting %s -> stable", release["release"])
     return {"promoted": True}
 
 

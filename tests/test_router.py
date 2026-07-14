@@ -49,7 +49,7 @@ def test_parse_tool_paren_array_form():
 
 
 def test_parse_tool_paren_single_shell_string():
-    """TOOL: execute(["npx create-next-app foo"]) → shlex-split into argv."""
+    """TOOL: execute(["npx create-next-app foo"]) -> shlex-split into argv."""
     r = LLMRouter(force="offline")
     d = r._parse_decision('TOOL: execute(["npx create-next-app foo"])', ["execute"])
     assert d.kind == "tool_call" and d.tool_args["argv"] == ["npx", "create-next-app", "foo"]

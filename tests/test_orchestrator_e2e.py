@@ -1,4 +1,4 @@
-"""End-to-end: intent → orchestrator → sandbox → result event in the BB."""
+"""End-to-end: intent -> orchestrator -> sandbox -> result event in the BB."""
 
 from __future__ import annotations
 
@@ -32,5 +32,5 @@ def test_e2e_intent_to_result(isolated_home, tmp_path, monkeypatch):
     assert "spawn" in kinds
     assert "started" in kinds
     assert "finished" in kinds
-    # offline router → at least one tool_call event
+    # offline router -> at least one tool_call event
     assert "tool_call" in kinds

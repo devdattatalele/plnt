@@ -6,8 +6,8 @@ a Temporal `DeployModelWorkflow`.
 Design:
 
 * One workflow per (namespace, name).
-* Create → start workflow. Update (generation bump) → cancel + restart.
-  Delete → cancel + helm uninstall.
+* Create -> start workflow. Update (generation bump) -> cancel + restart.
+  Delete -> cancel + helm uninstall.
 * The workflow does the real work — retries, saga, compensation. This
   controller is a thin bridge between K8s events and Temporal.
 * Status subresource is patched on every workflow milestone via the callbacks

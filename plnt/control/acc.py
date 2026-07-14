@@ -6,7 +6,7 @@ failure modes that small local models reliably get wrong:
 
   1. Tool-call loop — the same (tool, args) called repeatedly.
   2. Fan-out blowup — agents spawning agents past the depth cap.
-  3. Planner ↔ specialist ping-pong — alternating identical handoffs.
+  3. Planner <-> specialist ping-pong — alternating identical handoffs.
 
 When it detects one, it calls back to the orchestrator to kill the offending
 agent. The ACC is a *signal*, not a policy — what to do is the orchestrator's
@@ -38,7 +38,7 @@ KillFn = Callable[[str, str], bool]  # (agent_id, reason) -> killed?
 class ACCMonitor:
     """Streaming monitor. Feed events; get detections; let the kill_fn act."""
 
-    LOOP_THRESHOLD = 3   # same tool call N times → loop
+    LOOP_THRESHOLD = 3   # same tool call N times -> loop
     PINGPONG_THRESHOLD = 4
 
     def __init__(self, kill_fn: KillFn | None = None, max_depth: int = HARD_MAX_DEPTH):

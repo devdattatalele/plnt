@@ -65,7 +65,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 class AuthStore:
-    """File-backed map of username → password_hash."""
+    """File-backed map of username -> password_hash."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or (paths().home / "auth.toml")

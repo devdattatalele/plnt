@@ -6,7 +6,7 @@ Four outcomes:
   - needs_clarification : task-shaped, but critical info is missing.
                           Reply asks for what's needed before any spawn.
   - simple_task         : one well-scoped step, 1 agent.
-  - complex_task        : multi-step construction or research → planner DAG.
+  - complex_task        : multi-step construction or research -> planner DAG.
 
 Triage receives the recent conversation so it can recognise "they're
 answering my prior question" and shift to a real plan.
@@ -117,11 +117,11 @@ def triage(
         text = (decision.text or "").strip()
     except Exception as e:
         logger.warning("triage step failed: %s", e)
-        return TriageResult(kind="simple_task", reason="triage error → default simple")
+        return TriageResult(kind="simple_task", reason="triage error -> default simple")
 
     parsed = _extract_json(text)
     if not parsed:
-        return TriageResult(kind="simple_task", reason="triage unparseable → default simple")
+        return TriageResult(kind="simple_task", reason="triage unparseable -> default simple")
 
     kind = str(parsed.get("kind", "")).strip()
     if kind not in ("chat", "needs_clarification", "simple_task", "complex_task"):

@@ -132,8 +132,8 @@ class LLMRouter:
     """OpenAI-compatible chat router. Backend-agnostic.
 
     The router does NOT pick the backend. It asks `backend_picker.choose()`
-    on every step and uses whatever it gets. That makes the SSD-mounted →
-    local-Ollama, SSD-missing → cloud-API behaviour automatic and per-call.
+    on every step and uses whatever it gets. That makes the SSD-mounted ->
+    local-Ollama, SSD-missing -> cloud-API behaviour automatic and per-call.
     """
 
     def __init__(

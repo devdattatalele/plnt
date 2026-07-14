@@ -30,9 +30,9 @@ operator watching one CRD.
             ▼
    ┌─────────────────────────────────────────────────────────────────────────┐
    │  DeployModelWorkflow (Temporal)                                         │
-   │    validate_manifest → pull_and_verify_weights → helm_install_canary    │
-   │    → run_smoke_test → promote_or_rollback                               │
-   │  Compensation on any step → `helm rollback`.                            │
+   │    validate_manifest -> pull_and_verify_weights -> helm_install_canary    │
+   │    -> run_smoke_test -> promote_or_rollback                               │
+   │  Compensation on any step -> `helm rollback`.                            │
    └───────────────────────────────┬─────────────────────────────────────────┘
                                    │  kicked off by
                                    ▼
@@ -65,7 +65,7 @@ can talk to whatever's deployed on the cluster without ever leaving the marketin
 page.
 
 Model list is configuration, not code — the Helm chart ships a ConfigMap
-(`values.yaml → models`) that the pod reads at startup. `helm upgrade` with a
+(`values.yaml -> models`) that the pod reads at startup. `helm upgrade` with a
 new list restarts the pod (annotation-driven checksum) and picks up the change.
 There is no runtime `POST /models` — model lifecycle is a Helm concern, not a
 REST call, which keeps the audit trail in `helm history` where cluster

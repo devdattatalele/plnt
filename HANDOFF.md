@@ -13,7 +13,7 @@ Paste this into a fresh Claude Code session running in `/Users/dev16/Documents/d
 **Why the pivot:** target job is **NVIDIA — Senior Software Engineer, NIM Factory Container and Cloud Infrastructure** (Santa Clara, JR2003580). Job core: container strategy for NVIDIA Inference Microservices (NIMs), Python tooling for build orchestration + Helm/Operator automation, K8s deployment patterns for GPU workloads, base image strategy, multi-tenant multi-cluster delivery. plnt is being reshaped to look like *"a mini NIM Factory of my own"* — Helm charts for inference runtimes (vLLM / TGI / TRT-LLM / SGLang), Temporal workflows for deploy sagas, custom `InferenceModel` CRD + operator, Python CLI.
 
 **Prior session artifacts you can reuse:**
-- `../plnt-cloud/workflows/saga_booking.py` — reference Temporal saga pattern (create → notify → compensate). Same shape as the deploy saga we need here.
+- `../plnt-cloud/workflows/saga_booking.py` — reference Temporal saga pattern (create -> notify -> compensate). Same shape as the deploy saga we need here.
 - `../plnt-cloud/workflows/worker.py` — reference `SandboxedWorkflowRunner` + passthrough module list. The plnt deploy workflow will use the same setup.
 - `../plnt-cloud/workflows/session.py` — reference `RetryPolicy(initial_interval, maximum_attempts, backoff_coefficient)` per-activity pattern.
 - `../plnt-cloud/providers/{base,resy,registry}.py` — reference `ProviderAdapter` abstraction (search/availability/book). We'll build a similar `RuntimeAdapter` for inference backends (vLLM / TGI / TRT-LLM / SGLang).
@@ -37,8 +37,8 @@ plnt CLI + Python API
 
 Kubernetes surface (kind cluster for local demo):
   - CRD: apiVersion: plnt.work/v1, kind: InferenceModel
-  - Operator (Python kopf) watches InferenceModel → kicks off Temporal deploy workflow
-  - Temporal workflow: validate_manifest → pull_weights → helm_install_canary → smoke_test → promote_or_rollback
+  - Operator (Python kopf) watches InferenceModel -> kicks off Temporal deploy workflow
+  - Temporal workflow: validate_manifest -> pull_weights -> helm_install_canary -> smoke_test -> promote_or_rollback
   - GPU scheduling via nvidia.com/gpu resource requests (works with the nvidia-device-plugin DaemonSet on real clusters, mocked on kind)
 ```
 
@@ -61,14 +61,14 @@ Kubernetes surface (kind cluster for local demo):
   2. `pull_and_verify_weights` (hash-check against registry entry)
   3. `helm_install_canary` (deploy with 5% traffic split — use Envoy VirtualService weights)
   4. `run_smoke_test` (N test prompts, measure TTFT/TPOT, compare against baseline)
-  5. `promote_or_rollback` (KPI check → 100% or `helm uninstall`)
+  5. `promote_or_rollback` (KPI check -> 100% or `helm uninstall`)
 - Compensation on any step failure via `helm rollback`.
 - Reuse the `RetryPolicy` + `non_retryable_error_types` pattern from plnt-cloud.
 - Add `workflows/worker.py` mirroring plnt-cloud's — sandbox + passthrough for anything the activities import.
 
 **Phase 3 — InferenceModel CRD + operator (day 10–13)**
 - CRD spec in `plnt/operators/crds/inferencemodel.yaml`.
-- `plnt/operators/inferencemodel_controller.py` using `kopf` — watches InferenceModel resources, on create → kicks off `DeployModelWorkflow` via Temporal client; on update → triggers new canary; on delete → `helm uninstall`.
+- `plnt/operators/inferencemodel_controller.py` using `kopf` — watches InferenceModel resources, on create -> kicks off `DeployModelWorkflow` via Temporal client; on update -> triggers new canary; on delete -> `helm uninstall`.
 - `examples/llama-70b.yaml` — a real InferenceModel resource `kubectl apply -f` runs the full flow.
 
 **Phase 4 — Python CLI (day 14–16)**

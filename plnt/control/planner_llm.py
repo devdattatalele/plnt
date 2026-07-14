@@ -234,7 +234,7 @@ def _spec_from_plan(raw: dict, intent: str, registry: SkillRegistry, seen_ids: s
 
 
 def _sanitize_role(s: str) -> str:
-    # turn "Log Grepper" → "log-grepper"; clamp length
+    # turn "Log Grepper" -> "log-grepper"; clamp length
     s = re.sub(r"[^a-zA-Z0-9_-]+", "-", s.strip().lower()).strip("-")
     if not s:
         return "general-helper"

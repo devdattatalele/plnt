@@ -11,9 +11,9 @@ Lifecycle of one intent:
      output dir, and a `result` event closes the run.
 
 v0 keeps step 3 simple: the planner is implemented in code as a router that
-maps intent → role via keyword match, and falls back to `general-helper`.
+maps intent -> role via keyword match, and falls back to `general-helper`.
 A future revision swaps in an LLM-based planner without changing this file's
-shape — the planner is just a function from (intent, registry) → AgentSpec.
+shape — the planner is just a function from (intent, registry) -> AgentSpec.
 """
 
 from __future__ import annotations
@@ -166,12 +166,12 @@ class Orchestrator:
         blackboard: Blackboard | None = None,
         history: list | None = None,
     ) -> RunHandle:
-        """Triage → (chat | one agent | DAG fan-out) → synthesize.
+        """Triage -> (chat | one agent | DAG fan-out) -> synthesize.
 
         - triage classifies the intent. "hi" returns kind=chat with a direct
           reply; no agents are spawned.
-        - simple_task → one agent.
-        - complex_task → planner emits a DAG; DAGExecutor runs it; synthesizer
+        - simple_task -> one agent.
+        - complex_task -> planner emits a DAG; DAGExecutor runs it; synthesizer
           reconciles outputs into a single user-facing answer.
         """
         from plnt.control.dag import DAGExecutor
@@ -362,14 +362,14 @@ def _build_user_answer(intent, tri, out, specs):
     outputs = out.outputs or {}
 
     if outputs:
-        # Single-agent simple_task → use the agent's answer verbatim.
+        # Single-agent simple_task -> use the agent's answer verbatim.
         if len(outputs) == 1 and tri.kind == "simple_task":
             only = next(iter(outputs.values()))
             ans = only.get("answer") if isinstance(only, dict) else None
             if not ans:
                 ans = _concat_fallback(outputs)
             return ans, "agent"
-        # Multi-agent → synth, with deterministic fallback.
+        # Multi-agent -> synth, with deterministic fallback.
         answer = synthesize(intent, "swarm", outputs)
         if answer and answer.strip() and "(no answer)" not in answer:
             return answer, "synth"
@@ -492,7 +492,7 @@ def _looks_like_parent_container(p: Path) -> bool:
     return False
 
 
-# Stop-words pulled out of the slug so "build me a chatbot please" → "chatbot".
+# Stop-words pulled out of the slug so "build me a chatbot please" -> "chatbot".
 _STOP_WORDS = {
     "a", "an", "the", "me", "my", "please", "pls", "with", "and", "of", "in",
     "on", "for", "to", "from", "now", "next", "new", "some", "any", "this",
@@ -506,9 +506,9 @@ _STOP_WORDS = {
 def _slug_from_intent(intent: str, max_len: int = 32) -> str:
     """Pull the meaningful noun out of an intent.
 
-    "build a chatbot for me"        → "chatbot"
-    "scaffold a vite project"       → "vite"
-    "create next-base portfolio"    → "next-base-portfolio"
+    "build a chatbot for me"        -> "chatbot"
+    "scaffold a vite project"       -> "vite"
+    "create next-base portfolio"    -> "next-base-portfolio"
     """
     words = [
         w for w in _re.split(r"[^a-zA-Z0-9-]+", (intent or "").lower())
@@ -542,8 +542,8 @@ def _resolve_project_dir(
          pyproject.toml / Cargo.toml / go.mod) AND the verb is edit-style
          ("add a navbar to /Users/x/myapp") — work IN their project.
       3. User-mentioned parent container ("inside /Users/x/Documents/...")
-         OR any user path under a create-verb → carve a slug-named subdir.
-         "build chatbot inside ~/Documents/den-agent" →
+         OR any user path under a create-verb -> carve a slug-named subdir.
+         "build chatbot inside ~/Documents/den-agent" ->
            ~/Documents/den-agent/chatbot/
       4. Otherwise: <PLNT_HOME>/runs/<run_id>/project/.
 

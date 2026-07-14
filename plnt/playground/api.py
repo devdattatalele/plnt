@@ -8,7 +8,7 @@ Endpoints:
 * `POST /v1/chat/completions` — chat completion, SSE-streamed when `stream=true`
 
 The registry is loaded once at startup from env vars (see `discovery.py`), so
-`helm upgrade` with new values → pod restart → new model list. There is no
+`helm upgrade` with new values -> pod restart -> new model list. There is no
 runtime mutation API; deploying a new model is a Helm concern, not a REST call.
 """
 

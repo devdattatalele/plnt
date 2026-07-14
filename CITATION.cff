@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use plnt in your research or work, please cite it as below."
+type: software
+title: "plnt: multi-model inference playground on Kubernetes"
+version: 0.1.0
+date-released: "2026-07-14"
+authors:
+  - family-names: Talele
+    given-names: Devdatta
+    email: bonde.sagar@gmail.com
+repository-code: "https://github.com/devdattatalele/plnt"
+url: "https://plnt.work"
+license: Apache-2.0
+keywords:
+  - kubernetes
+  - inference
+  - vllm
+  - openai-compatible
+  - helm
+  - temporal
+  - operator
+  - nvidia
+  - llm-serving
+abstract: >
+  plnt is an opinionated, Helm-native platform for deploying and serving
+  multi-runtime ML inference on Kubernetes. It ships an OpenAI-compatible
+  playground API, per-runtime Helm charts (vLLM, TGI, TRT-LLM, SGLang),
+  a Temporal deploy saga, and an InferenceModel CRD driven by a Python
+  operator.

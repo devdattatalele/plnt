@@ -165,7 +165,7 @@ def _run_skill(run: _Run, allowed_roots: list[Path]) -> dict[str, Any]:
                 result = {"error": str(e)}
             _emit("tool_result", step=step, tool=tool, ok="error" not in result)
             # Filesystem-change visibility: what got created or modified during
-            # this tool call? The TUI uses this to render "📁 + X new files" in
+            # this tool call? The TUI uses this to render " + X new files" in
             # real time so the user can see work happening.
             after_files = _scan_workdir(workdir)
             new_files = sorted(after_files - before_files)

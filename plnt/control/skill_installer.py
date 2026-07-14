@@ -6,10 +6,10 @@ frontmatter + markdown body — we wrap the body into a v0.2 skill dir with a
 generated skill.toml that maps the standard fields.
 
 Known sources (well-known shorthands):
-  - anthropic         → github.com/anthropics/skills
-  - addyosmani        → github.com/addyosmani/agent-skills
-  - scientific        → github.com/K-Dense-AI/scientific-agent-skills
-  - antigravity       → github.com/sickn33/antigravity-awesome-skills
+  - anthropic         -> github.com/anthropics/skills
+  - addyosmani        -> github.com/addyosmani/agent-skills
+  - scientific        -> github.com/K-Dense-AI/scientific-agent-skills
+  - antigravity       -> github.com/sickn33/antigravity-awesome-skills
 
 Anything else: pass a full git URL.
 """
@@ -108,7 +108,7 @@ def _find_skill_files(repo: Path) -> list[Path]:
 
 
 def _convert(skill_md: Path, repo_root: Path) -> tuple[str, str, str]:
-    """Parse one SKILL.md → (role, generated_skill_toml, prompt_md_body)."""
+    """Parse one SKILL.md -> (role, generated_skill_toml, prompt_md_body)."""
     text = skill_md.read_text(encoding="utf-8", errors="replace")
     m = _FRONTMATTER_RE.match(text)
     if not m:

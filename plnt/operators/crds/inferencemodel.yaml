@@ -3,7 +3,7 @@
 #
 # `kubectl apply -f examples/llama-3.1-70b-instruct.yaml` creates one of these.
 # The plnt operator (kopf) watches the resource and starts a Temporal
-# `DeployModelWorkflow`, which handles pull → helm install → smoke → promote.
+# `DeployModelWorkflow`, which handles pull -> helm install -> smoke -> promote.
 #
 # Apply:
 #   kubectl apply -f plnt/operators/crds/inferencemodel.yaml

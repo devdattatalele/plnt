@@ -1,4 +1,4 @@
-"""AgentSpec — the only object that crosses Control → Execution.
+"""AgentSpec — the only object that crosses Control -> Execution.
 
 The planner LLM emits one of these per spawn. The execution plane validates
 and runs it inside the chosen sandbox. Everything about a micro-agent's
@@ -26,7 +26,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class Budget(BaseModel):
-    """Per-spawn hard ceilings. Hit any one → spawn is killed."""
+    """Per-spawn hard ceilings. Hit any one -> spawn is killed."""
 
     tokens: int = Field(default=20_000, ge=100, le=HARD_MAX_TOKENS_PER_SPAWN)
     wall_seconds: int = Field(default=300, ge=1, le=HARD_MAX_WALL_SECONDS_PER_SPAWN)

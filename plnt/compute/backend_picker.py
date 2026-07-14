@@ -39,7 +39,7 @@ class BackendChoice:
 
 def _ssd_mounted(required_path: str | None) -> bool:
     if not required_path:
-        return True  # no requirement → considered mounted
+        return True  # no requirement -> considered mounted
     p = Path(required_path)
     try:
         return p.exists() and p.is_dir()
@@ -103,7 +103,7 @@ def choose(
       1. `force` (debug / testing / cost-cap override)
       2. local if SSD mounted AND endpoint healthy
       3. cloud if URL + key configured AND endpoint reachable
-      4. offline → router falls back to its deterministic echo path
+      4. offline -> router falls back to its deterministic echo path
     """
     require_path = require_path or os.environ.get("PLNT_REQUIRED_PATH") or None
     local_url = local_url or os.environ.get("PLNT_LOCAL_URL") or os.environ.get("PLNT_COMPUTE_URL") or "http://127.0.0.1:11434"

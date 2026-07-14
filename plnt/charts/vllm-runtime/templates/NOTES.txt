@@ -1,0 +1,8 @@
+Deployed {{ .Release.Name }} — vLLM runtime for model {{ .Values.model.name }}.
+
+Endpoint (in-cluster):
+ http://{{ include "vllm-runtime.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/v1/chat/completions
+
+Watch:
+ kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "vllm-runtime.fullname" . }}
+ kubectl -n {{ .Release.Namespace }} logs -f deployment/{{ include "vllm-runtime.fullname" . }}

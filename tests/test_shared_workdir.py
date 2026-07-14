@@ -107,7 +107,7 @@ def test_resolve_does_not_treat_gitted_workspace_as_project_root(tmp_path):
 
 
 # REGRESSION: a create-verb in the current intent must override a prior
-# project from history. "build a new chatbot" after a vite turn → chatbot
+# project from history. "build a new chatbot" after a vite turn -> chatbot
 # gets its own dir, doesn't inherit the vite project.
 def test_create_verb_resets_session_project(tmp_path):
     prior_project = tmp_path / "old-vite-app"
@@ -122,7 +122,7 @@ def test_create_verb_resets_session_project(tmp_path):
         runs_root=tmp_path,
     )
     assert out != prior_project
-    # No user_paths → falls to run-scoped fallback (case 4).
+    # No user_paths -> falls to run-scoped fallback (case 4).
     assert "r-fresh01" in str(out)
 
 
@@ -147,7 +147,7 @@ def test_slug_from_intent_picks_meaningful_noun():
     assert _slug_from_intent("build a chatbot for me") == "chatbot"
     assert _slug_from_intent("build me a new portfolio site please") == "portfolio"
     assert _slug_from_intent("scaffold a vite project") == "vite"
-    # All stop words → fallback
+    # All stop words -> fallback
     assert _slug_from_intent("build me a new thing") == "task"
 
 

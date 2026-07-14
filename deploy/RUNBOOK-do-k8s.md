@@ -30,8 +30,8 @@ doctl account get                        # sanity — should print your email
 ```
 
 Cloudflare API token (only needed if you want DNS via API; the UI works too):
-- https://dash.cloudflare.com/profile/api-tokens → **Create Token**
-- Template: **Edit zone DNS** → scope to `plnt.work` zone → create.
+- https://dash.cloudflare.com/profile/api-tokens -> **Create Token**
+- Template: **Edit zone DNS** -> scope to `plnt.work` zone -> create.
 - Export: `export CF_API_TOKEN=...`
 
 ---
@@ -153,7 +153,7 @@ and re-apply.
 
 Point `playground.plnt.work` at the LB. In Cloudflare dashboard:
 
-- Zone: `plnt.work` → **DNS** → **Add record**
+- Zone: `plnt.work` -> **DNS** -> **Add record**
 - Type: `A`
 - Name: `playground`
 - IPv4 address: `$LB_IP` (from step 4)
